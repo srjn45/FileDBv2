@@ -40,14 +40,15 @@ type WatchEvent struct {
 // Collection is a named set of records stored across one or more segment files.
 // All exported methods are safe for concurrent use.
 type Collection struct {
-	name   string
-	dir    string
-	cfg    CollectionConfig
-	mu     sync.RWMutex
-	sealed []*Segment
-	active *Segment
-	index  *Index
-	idSeq  atomic.Uint64 // monotonically increasing id counter
+	name      string
+	dir       string
+	cfg       CollectionConfig
+	createdAt time.Time
+	mu        sync.RWMutex
+	sealed    []*Segment
+	active    *Segment
+	index     *Index
+	idSeq     atomic.Uint64 // monotonically increasing id counter
 
 	// Watch subscribers.
 	watchMu      sync.Mutex
@@ -139,9 +140,19 @@ func (c *Collection) load() error {
 		_ = c.index.Persist(indexPath)
 	}
 
-	// Set the id sequence to the highest known id.
-	c.index.mu.RLock()
+	// Restore the id counter.
+	// Fast path: load from meta.json written by a previous clean run.
+	metaPath := filepath.Join(c.dir, metaFilename)
+	if meta, err := loadMeta(metaPath); err == nil {
+		c.idSeq.Store(meta.IDCounter)
+		c.createdAt = meta.CreatedAt
+		return nil
+	}
+
+	// Slow path: meta.json is missing or corrupt — scan all entries for max id.
 	var maxID uint64
+
+	c.index.mu.RLock()
 	for id := range c.index.entries {
 		if id > maxID {
 			maxID = id
@@ -149,7 +160,6 @@ func (c *Collection) load() error {
 	}
 	c.index.mu.RUnlock()
 
-	// Also scan all entries to find the true max id (includes deleted).
 	for _, seg := range all {
 		entries, err := seg.ScanAll()
 		if err != nil {
@@ -162,6 +172,10 @@ func (c *Collection) load() error {
 		}
 	}
 	c.idSeq.Store(maxID)
+	c.createdAt = time.Now().UTC()
+
+	// Write meta.json so the next startup can skip this scan.
+	_ = persistMeta(metaPath, collectionMeta{IDCounter: maxID, CreatedAt: c.createdAt})
 
 	return nil
 }
@@ -188,6 +202,9 @@ func (c *Collection) Insert(data map[string]any) (uint64, time.Time, error) {
 			return id, ts, fmt.Errorf("collection: rotate after insert: %w", err)
 		}
 	}
+
+	_ = persistMeta(filepath.Join(c.dir, metaFilename),
+		collectionMeta{IDCounter: id, CreatedAt: c.createdAt})
 
 	c.emit(WatchEvent{Op: store.OpInsert, ID: id, Data: data, Ts: ts})
 	return id, ts, nil
@@ -423,5 +440,9 @@ func (c *Collection) Close() error {
 	if err := c.active.Close(); err != nil {
 		return err
 	}
-	return c.index.Persist(filepath.Join(c.dir, "index.json"))
+	if err := c.index.Persist(filepath.Join(c.dir, "index.json")); err != nil {
+		return err
+	}
+	return persistMeta(filepath.Join(c.dir, metaFilename),
+		collectionMeta{IDCounter: c.idSeq.Load(), CreatedAt: c.createdAt})
 }
