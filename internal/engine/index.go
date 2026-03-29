@@ -173,7 +173,7 @@ func scanOffsets(seg *Segment) ([]int64, error) {
 	if err != nil {
 		return nil, fmt.Errorf("index: scanOffsets open %q: %w", seg.Path(), err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	var offsets []int64
 	var pos int64

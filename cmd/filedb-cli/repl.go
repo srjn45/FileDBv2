@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -23,19 +24,19 @@ func replCmd(flags *cliFlags) *cobra.Command {
 
 func runREPL(flags *cliFlags) error {
 	line := liner.NewLiner()
-	defer line.Close()
+	defer func() { _ = line.Close() }()
 	line.SetCtrlCAborts(true)
 
 	// Load history.
 	histPath := filepath.Join(os.TempDir(), ".filedb_history")
 	if f, err := os.Open(histPath); err == nil {
-		line.ReadHistory(f)
-		f.Close()
+		_, _ = line.ReadHistory(f)
+		_ = f.Close()
 	}
 	defer func() {
 		if f, err := os.Create(histPath); err == nil {
-			line.WriteHistory(f)
-			f.Close()
+			_, _ = line.WriteHistory(f)
+			_ = f.Close()
 		}
 	}()
 
@@ -51,7 +52,7 @@ func runREPL(flags *cliFlags) error {
 
 	for {
 		input, err := line.Prompt(prompt())
-		if err == liner.ErrPromptAborted || err == io.EOF {
+		if errors.Is(err, liner.ErrPromptAborted) || errors.Is(err, io.EOF) {
 			fmt.Println()
 			return nil
 		}

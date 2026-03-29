@@ -22,7 +22,7 @@ func runCmd(flags *cliFlags) *cobra.Command {
 				if err != nil {
 					return fmt.Errorf("open script: %w", err)
 				}
-				defer f.Close()
+				defer func() { _ = f.Close() }()
 				r = f
 			} else {
 				// Check if stdin has data (piped input).
@@ -52,9 +52,9 @@ func runBatch(r io.Reader, flags *cliFlags, out io.Writer) error {
 			continue
 		}
 
-		fmt.Fprintf(out, ">>> %s\n", line)
+		_, _ = fmt.Fprintf(out, ">>> %s\n", line)
 		if err := handleREPLLine(line, &collection, flags); err != nil {
-			fmt.Fprintf(out, "error on line %d: %v\n", lineNum, err)
+			_, _ = fmt.Fprintf(out, "error on line %d: %v\n", lineNum, err)
 		}
 	}
 

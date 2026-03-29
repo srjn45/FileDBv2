@@ -1,0 +1,24 @@
+version: "2"
+
+linters:
+  # errcheck, govet, staticcheck, unused, ineffassign are all enabled by default.
+  # Add a few extras that catch real bugs without being noisy.
+  enable:
+    - bodyclose     # HTTP response body not closed
+    - errorlint     # incorrect error wrapping (Go 1.13+)
+    - copyloopvar   # loop variable capture bugs
+
+formatters:
+  exclusions:
+    paths:
+      - internal/pb  # generated protobuf code
+
+issues:
+  exclusions:
+    paths:
+      - internal/pb  # generated protobuf code
+    rules:
+      # Test files can use unchecked errors freely (Close, Append, Insert, etc.)
+      - path: "_test\\.go$"
+        linters:
+          - errcheck

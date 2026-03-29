@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"sync"
 	"time"
-
-	"github.com/srjn45/filedbv2/internal/store"
 )
 
 // txOpKind identifies the operation staged inside a transaction.
@@ -106,14 +104,3 @@ func newTxID() string {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
-// txOpKindFromStore maps store.Op → txOpKind (convenience for watch emission).
-func storeOpFrom(k txOpKind) store.Op {
-	switch k {
-	case txOpInsert:
-		return store.OpInsert
-	case txOpUpdate:
-		return store.OpUpdate
-	default:
-		return store.OpDelete
-	}
-}

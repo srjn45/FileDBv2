@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -33,7 +34,7 @@ func collectionsCmd(flags *cliFlags) *cobra.Command {
 				return err
 			}
 			for _, name := range resp.Names {
-				fmt.Fprintln(cmd.OutOrStdout(), name)
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), name)
 			}
 			return nil
 		},
@@ -56,7 +57,7 @@ func createCollectionCmd(flags *cliFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "created collection %q at %s\n", resp.Name, resp.CreatedAt)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "created collection %q at %s\n", resp.Name, resp.CreatedAt)
 			return nil
 		},
 	}
@@ -78,7 +79,7 @@ func dropCollectionCmd(flags *cliFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "dropped %q\n", args[0])
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "dropped %q\n", args[0])
 			return nil
 		},
 	}
@@ -112,9 +113,9 @@ func insertCmd(flags *cliFlags) *cobra.Command {
 				return err
 			}
 			if txID != "" {
-				fmt.Fprintf(cmd.OutOrStdout(), "staged insert id:%d (tx:%s)\n", resp.Id, txID)
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "staged insert id:%d (tx:%s)\n", resp.Id, txID)
 			} else {
-				fmt.Fprintf(cmd.OutOrStdout(), "inserted id:%d (%s)\n", resp.Id, resp.DateAdded)
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "inserted id:%d (%s)\n", resp.Id, resp.DateAdded)
 			}
 			return nil
 		},
@@ -162,7 +163,7 @@ func findCmd(flags *cliFlags) *cobra.Command {
 			}
 			for {
 				resp, err := stream.Recv()
-				if err == io.EOF {
+				if errors.Is(err, io.EOF) {
 					break
 				}
 				if err != nil {
@@ -238,9 +239,9 @@ func updateCmd(flags *cliFlags) *cobra.Command {
 				return err
 			}
 			if txID != "" {
-				fmt.Fprintf(cmd.OutOrStdout(), "staged update id:%d (tx:%s)\n", resp.Id, txID)
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "staged update id:%d (tx:%s)\n", resp.Id, txID)
 			} else {
-				fmt.Fprintf(cmd.OutOrStdout(), "updated id:%d (%s)\n", resp.Id, resp.DateModified)
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "updated id:%d (%s)\n", resp.Id, resp.DateModified)
 			}
 			return nil
 		},
@@ -277,9 +278,9 @@ func deleteCmd(flags *cliFlags) *cobra.Command {
 				return err
 			}
 			if txID != "" {
-				fmt.Fprintf(cmd.OutOrStdout(), "staged delete id:%d (tx:%s)\n", id, txID)
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "staged delete id:%d (tx:%s)\n", id, txID)
 			} else {
-				fmt.Fprintf(cmd.OutOrStdout(), "deleted id:%d\n", id)
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "deleted id:%d\n", id)
 			}
 			return nil
 		},
@@ -306,7 +307,7 @@ func statsCmd(flags *cliFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(),
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(),
 				"collection:%s  records:%d  segments:%d  dirty:%d  size:%d bytes\n",
 				resp.Collection, resp.RecordCount, resp.SegmentCount, resp.DirtyEntries, resp.SizeBytes,
 			)
@@ -336,7 +337,7 @@ func exportCmd(flags *cliFlags) *cobra.Command {
 			enc := json.NewEncoder(cmd.OutOrStdout())
 			for {
 				resp, err := stream.Recv()
-				if err == io.EOF {
+				if errors.Is(err, io.EOF) {
 					break
 				}
 				if err != nil {
@@ -379,7 +380,7 @@ func importCmd(flags *cliFlags) *cobra.Command {
 				}
 				count++
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "imported %d records\n", count)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "imported %d records\n", count)
 			return nil
 		},
 	}
@@ -402,7 +403,7 @@ func beginTxCmd(flags *cliFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "%s\n", resp.TxId)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s\n", resp.TxId)
 			return nil
 		},
 	}
@@ -422,7 +423,7 @@ func commitTxCmd(flags *cliFlags) *cobra.Command {
 			if _, err := client.CommitTx(ctxWithAuth(flags), &pb.CommitTxRequest{TxId: args[0]}); err != nil {
 				return err
 			}
-			fmt.Fprintln(cmd.OutOrStdout(), "committed")
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), "committed")
 			return nil
 		},
 	}
@@ -442,7 +443,7 @@ func rollbackTxCmd(flags *cliFlags) *cobra.Command {
 			if _, err := client.RollbackTx(ctxWithAuth(flags), &pb.RollbackTxRequest{TxId: args[0]}); err != nil {
 				return err
 			}
-			fmt.Fprintln(cmd.OutOrStdout(), "rolled back")
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), "rolled back")
 			return nil
 		},
 	}
@@ -532,5 +533,5 @@ func printRecord(cmd *cobra.Command, r *pb.Record) {
 		return
 	}
 	b, _ := json.Marshal(r.Data.AsMap())
-	fmt.Fprintf(cmd.OutOrStdout(), "id:%-6d  %s\n", r.Id, string(b))
+	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "id:%-6d  %s\n", r.Id, string(b))
 }

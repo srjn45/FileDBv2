@@ -65,7 +65,7 @@ func serve(cfg server.Config) error {
 	if err != nil {
 		return fmt.Errorf("open db: %w", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	log.Printf("filedb: data dir=%q", cfg.DataDir)
 
 	// Build gRPC server with auth interceptors.

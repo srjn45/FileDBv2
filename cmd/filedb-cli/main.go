@@ -15,10 +15,9 @@ import (
 )
 
 type cliFlags struct {
-	host       string
-	socket     string
-	apiKey     string
-	collection string
+	host   string
+	socket string
+	apiKey string
 }
 
 func main() {
@@ -87,7 +86,7 @@ func connect(flags *cliFlags) (*grpc.ClientConn, pb.FileDBClient, func(), error)
 	}
 
 	client := pb.NewFileDBClient(conn)
-	cleanup := func() { conn.Close() }
+	cleanup := func() { _ = conn.Close() }
 	return conn, client, cleanup, nil
 }
 

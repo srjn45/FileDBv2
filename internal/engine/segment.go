@@ -35,7 +35,7 @@ func openActiveSegment(path string) (*Segment, error) {
 
 	size, err := recoverPartialLine(f)
 	if err != nil {
-		f.Close()
+		_ = f.Close()
 		return nil, fmt.Errorf("segment: recover %q: %w", path, err)
 	}
 
@@ -138,7 +138,7 @@ func (s *Segment) ReadAt(offset int64) (store.Entry, error) {
 	if err != nil {
 		return store.Entry{}, fmt.Errorf("segment: open for read %q: %w", s.path, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	if _, err := f.Seek(offset, io.SeekStart); err != nil {
 		return store.Entry{}, fmt.Errorf("segment: seek offset %d in %q: %w", offset, s.path, err)
@@ -161,7 +161,7 @@ func (s *Segment) ScanAll() ([]store.Entry, error) {
 	if err != nil {
 		return nil, fmt.Errorf("segment: scan open %q: %w", s.path, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	var entries []store.Entry
 	scanner := bufio.NewScanner(f)
