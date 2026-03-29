@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -8,6 +9,7 @@ import (
 	"strconv"
 
 	"github.com/spf13/cobra"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/types/known/structpb"
 
 	pb "github.com/srjn45/filedbv2/internal/pb/proto"
@@ -85,6 +87,7 @@ func dropCollectionCmd(flags *cliFlags) *cobra.Command {
 // ---- CRUD -----------------------------------------------------------------
 
 func insertCmd(flags *cliFlags) *cobra.Command {
+	var txID string
 	cmd := &cobra.Command{
 		Use:   "insert <collection> <json>",
 		Short: "Insert a record",
@@ -100,14 +103,23 @@ func insertCmd(flags *cliFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			resp, err := client.Insert(ctxWithAuth(flags), &pb.InsertRequest{Collection: args[0], Data: data})
+			ctx := ctxWithAuth(flags)
+			if txID != "" {
+				ctx = ctxWithTx(flags, txID)
+			}
+			resp, err := client.Insert(ctx, &pb.InsertRequest{Collection: args[0], Data: data})
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "inserted id:%d (%s)\n", resp.Id, resp.DateAdded)
+			if txID != "" {
+				fmt.Fprintf(cmd.OutOrStdout(), "staged insert id:%d (tx:%s)\n", resp.Id, txID)
+			} else {
+				fmt.Fprintf(cmd.OutOrStdout(), "inserted id:%d (%s)\n", resp.Id, resp.DateAdded)
+			}
 			return nil
 		},
 	}
+	cmd.Flags().StringVar(&txID, "tx-id", "", "Stage this operation inside an open transaction")
 	return cmd
 }
 
@@ -189,7 +201,8 @@ func findByIDCmd(flags *cliFlags) *cobra.Command {
 }
 
 func updateCmd(flags *cliFlags) *cobra.Command {
-	return &cobra.Command{
+	var txID string
+	cmd := &cobra.Command{
 		Use:   "update <collection> <id> <json>",
 		Short: "Update a record by id",
 		Args:  cobra.ExactArgs(3),
@@ -208,20 +221,31 @@ func updateCmd(flags *cliFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			resp, err := client.Update(ctxWithAuth(flags), &pb.UpdateRequest{
+			ctx := ctxWithAuth(flags)
+			if txID != "" {
+				ctx = ctxWithTx(flags, txID)
+			}
+			resp, err := client.Update(ctx, &pb.UpdateRequest{
 				Collection: args[0], Id: id, Data: data,
 			})
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "updated id:%d (%s)\n", resp.Id, resp.DateModified)
+			if txID != "" {
+				fmt.Fprintf(cmd.OutOrStdout(), "staged update id:%d (tx:%s)\n", resp.Id, txID)
+			} else {
+				fmt.Fprintf(cmd.OutOrStdout(), "updated id:%d (%s)\n", resp.Id, resp.DateModified)
+			}
 			return nil
 		},
 	}
+	cmd.Flags().StringVar(&txID, "tx-id", "", "Stage this operation inside an open transaction")
+	return cmd
 }
 
 func deleteCmd(flags *cliFlags) *cobra.Command {
-	return &cobra.Command{
+	var txID string
+	cmd := &cobra.Command{
 		Use:   "delete <collection> <id>",
 		Short: "Delete a record by id",
 		Args:  cobra.ExactArgs(2),
@@ -236,16 +260,26 @@ func deleteCmd(flags *cliFlags) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("invalid id: %w", err)
 			}
-			_, err = client.Delete(ctxWithAuth(flags), &pb.DeleteRequest{
+			ctx := ctxWithAuth(flags)
+			if txID != "" {
+				ctx = ctxWithTx(flags, txID)
+			}
+			_, err = client.Delete(ctx, &pb.DeleteRequest{
 				Collection: args[0], Id: id,
 			})
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "deleted id:%d\n", id)
+			if txID != "" {
+				fmt.Fprintf(cmd.OutOrStdout(), "staged delete id:%d (tx:%s)\n", id, txID)
+			} else {
+				fmt.Fprintf(cmd.OutOrStdout(), "deleted id:%d\n", id)
+			}
 			return nil
 		},
 	}
+	cmd.Flags().StringVar(&txID, "tx-id", "", "Stage this operation inside an open transaction")
+	return cmd
 }
 
 // ---- Stats ----------------------------------------------------------------
@@ -343,6 +377,78 @@ func importCmd(flags *cliFlags) *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// ---- Transactions ---------------------------------------------------------
+
+func beginTxCmd(flags *cliFlags) *cobra.Command {
+	return &cobra.Command{
+		Use:   "begin-tx <collection>",
+		Short: "Begin a transaction and print its tx_id",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, client, cleanup, err := connect(flags)
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+			resp, err := client.BeginTx(ctxWithAuth(flags), &pb.BeginTxRequest{Collection: args[0]})
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "%s\n", resp.TxId)
+			return nil
+		},
+	}
+}
+
+func commitTxCmd(flags *cliFlags) *cobra.Command {
+	return &cobra.Command{
+		Use:   "commit-tx <tx_id>",
+		Short: "Commit an open transaction",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, client, cleanup, err := connect(flags)
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+			if _, err := client.CommitTx(ctxWithAuth(flags), &pb.CommitTxRequest{TxId: args[0]}); err != nil {
+				return err
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), "committed")
+			return nil
+		},
+	}
+}
+
+func rollbackTxCmd(flags *cliFlags) *cobra.Command {
+	return &cobra.Command{
+		Use:   "rollback-tx <tx_id>",
+		Short: "Rollback (discard) an open transaction",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, client, cleanup, err := connect(flags)
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+			if _, err := client.RollbackTx(ctxWithAuth(flags), &pb.RollbackTxRequest{TxId: args[0]}); err != nil {
+				return err
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), "rolled back")
+			return nil
+		},
+	}
+}
+
+// ctxWithTx returns a context carrying both the API key and a tx_id header.
+func ctxWithTx(flags *cliFlags, txID string) context.Context {
+	pairs := []string{"x-tx-id", txID}
+	if flags.apiKey != "" {
+		pairs = append(pairs, "x-api-key", flags.apiKey)
+	}
+	return metadata.NewOutgoingContext(context.Background(), metadata.Pairs(pairs...))
 }
 
 // ---- Helpers --------------------------------------------------------------

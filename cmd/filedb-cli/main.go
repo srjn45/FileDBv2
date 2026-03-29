@@ -54,6 +54,9 @@ func rootCmd() *cobra.Command {
 		statsCmd(flags),
 		exportCmd(flags),
 		importCmd(flags),
+		beginTxCmd(flags),
+		commitTxCmd(flags),
+		rollbackTxCmd(flags),
 	)
 	return root
 }

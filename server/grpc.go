@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -19,12 +20,27 @@ import (
 // GRPCServer implements pb.FileDBServer.
 type GRPCServer struct {
 	pb.UnimplementedFileDBServer
-	db *engine.DB
+	db    *engine.DB
+	txMgr *engine.TxManager
 }
 
 // NewGRPCServer creates a GRPCServer backed by the given DB.
 func NewGRPCServer(db *engine.DB) *GRPCServer {
-	return &GRPCServer{db: db}
+	return &GRPCServer{db: db, txMgr: engine.NewTxManager()}
+}
+
+// txIDFromContext extracts the x-tx-id value from incoming gRPC metadata.
+// Returns "" if not present.
+func txIDFromContext(ctx context.Context) string {
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return ""
+	}
+	vals := md.Get("x-tx-id")
+	if len(vals) == 0 {
+		return ""
+	}
+	return vals[0]
 }
 
 // ---- Collection management ------------------------------------------------
@@ -55,11 +71,25 @@ func (s *GRPCServer) ListCollections(_ context.Context, _ *pb.ListCollectionsReq
 
 // ---- CRUD -----------------------------------------------------------------
 
-func (s *GRPCServer) Insert(_ context.Context, req *pb.InsertRequest) (*pb.InsertResponse, error) {
+func (s *GRPCServer) Insert(ctx context.Context, req *pb.InsertRequest) (*pb.InsertResponse, error) {
 	col, err := s.db.Collection(req.Collection)
 	if err != nil {
 		return nil, status.Errorf(codes.NotFound, "%v", err)
 	}
+
+	if txID := txIDFromContext(ctx); txID != "" {
+		tx, ok := s.txMgr.Get(txID)
+		if !ok {
+			return nil, status.Errorf(codes.NotFound, "tx %q not found", txID)
+		}
+		if tx.Collection != req.Collection {
+			return nil, status.Errorf(codes.InvalidArgument, "tx %q is bound to collection %q, not %q", txID, tx.Collection, req.Collection)
+		}
+		id := col.ReserveID()
+		tx.StageInsert(id, req.Data.AsMap())
+		return &pb.InsertResponse{Id: id, DateAdded: time.Now().UTC().Format(time.RFC3339)}, nil
+	}
+
 	data := req.Data.AsMap()
 	id, ts, err := col.Insert(data)
 	if err != nil {
@@ -138,11 +168,24 @@ func (s *GRPCServer) Find(req *pb.FindRequest, stream pb.FileDB_FindServer) erro
 	return nil
 }
 
-func (s *GRPCServer) Update(_ context.Context, req *pb.UpdateRequest) (*pb.UpdateResponse, error) {
+func (s *GRPCServer) Update(ctx context.Context, req *pb.UpdateRequest) (*pb.UpdateResponse, error) {
 	col, err := s.db.Collection(req.Collection)
 	if err != nil {
 		return nil, status.Errorf(codes.NotFound, "%v", err)
 	}
+
+	if txID := txIDFromContext(ctx); txID != "" {
+		tx, ok := s.txMgr.Get(txID)
+		if !ok {
+			return nil, status.Errorf(codes.NotFound, "tx %q not found", txID)
+		}
+		if tx.Collection != req.Collection {
+			return nil, status.Errorf(codes.InvalidArgument, "tx %q is bound to collection %q, not %q", txID, tx.Collection, req.Collection)
+		}
+		tx.StageUpdate(req.Id, req.Data.AsMap())
+		return &pb.UpdateResponse{Id: req.Id, DateModified: time.Now().UTC().Format(time.RFC3339)}, nil
+	}
+
 	ts, err := col.Update(req.Id, req.Data.AsMap())
 	if err != nil {
 		return nil, status.Errorf(codes.NotFound, "%v", err)
@@ -150,11 +193,24 @@ func (s *GRPCServer) Update(_ context.Context, req *pb.UpdateRequest) (*pb.Updat
 	return &pb.UpdateResponse{Id: req.Id, DateModified: ts.Format(time.RFC3339)}, nil
 }
 
-func (s *GRPCServer) Delete(_ context.Context, req *pb.DeleteRequest) (*pb.DeleteResponse, error) {
+func (s *GRPCServer) Delete(ctx context.Context, req *pb.DeleteRequest) (*pb.DeleteResponse, error) {
 	col, err := s.db.Collection(req.Collection)
 	if err != nil {
 		return nil, status.Errorf(codes.NotFound, "%v", err)
 	}
+
+	if txID := txIDFromContext(ctx); txID != "" {
+		tx, ok := s.txMgr.Get(txID)
+		if !ok {
+			return nil, status.Errorf(codes.NotFound, "tx %q not found", txID)
+		}
+		if tx.Collection != req.Collection {
+			return nil, status.Errorf(codes.InvalidArgument, "tx %q is bound to collection %q, not %q", txID, tx.Collection, req.Collection)
+		}
+		tx.StageDelete(req.Id)
+		return &pb.DeleteResponse{Ok: true}, nil
+	}
+
 	if err := col.Delete(req.Id); err != nil {
 		return nil, status.Errorf(codes.NotFound, "%v", err)
 	}
@@ -227,16 +283,42 @@ func (s *GRPCServer) CollectionStats(_ context.Context, req *pb.CollectionStatsR
 	}, nil
 }
 
-// ---- Transactions (stub) --------------------------------------------------
+// ---- Transactions ---------------------------------------------------------
 
-func (s *GRPCServer) BeginTx(_ context.Context, _ *pb.BeginTxRequest) (*pb.BeginTxResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "transactions not yet implemented")
+func (s *GRPCServer) BeginTx(_ context.Context, req *pb.BeginTxRequest) (*pb.BeginTxResponse, error) {
+	if req.Collection == "" {
+		return nil, status.Error(codes.InvalidArgument, "collection required")
+	}
+	if _, err := s.db.Collection(req.Collection); err != nil {
+		return nil, status.Errorf(codes.NotFound, "%v", err)
+	}
+	txID := s.txMgr.Begin(req.Collection)
+	return &pb.BeginTxResponse{TxId: txID}, nil
 }
-func (s *GRPCServer) CommitTx(_ context.Context, _ *pb.CommitTxRequest) (*pb.CommitTxResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "transactions not yet implemented")
+
+func (s *GRPCServer) CommitTx(_ context.Context, req *pb.CommitTxRequest) (*pb.CommitTxResponse, error) {
+	tx, ok := s.txMgr.Get(req.TxId)
+	if !ok {
+		return nil, status.Errorf(codes.NotFound, "tx %q not found", req.TxId)
+	}
+	col, err := s.db.Collection(tx.Collection)
+	if err != nil {
+		return nil, status.Errorf(codes.NotFound, "%v", err)
+	}
+	ops := tx.Snapshot()
+	s.txMgr.Remove(req.TxId)
+	if err := col.CommitTx(ops); err != nil {
+		return nil, status.Errorf(codes.Aborted, "commit failed: %v", err)
+	}
+	return &pb.CommitTxResponse{Ok: true}, nil
 }
-func (s *GRPCServer) RollbackTx(_ context.Context, _ *pb.RollbackTxRequest) (*pb.RollbackTxResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "transactions not yet implemented")
+
+func (s *GRPCServer) RollbackTx(_ context.Context, req *pb.RollbackTxRequest) (*pb.RollbackTxResponse, error) {
+	if _, ok := s.txMgr.Get(req.TxId); !ok {
+		return nil, status.Errorf(codes.NotFound, "tx %q not found", req.TxId)
+	}
+	s.txMgr.Remove(req.TxId)
+	return &pb.RollbackTxResponse{Ok: true}, nil
 }
 
 // ---- Helpers --------------------------------------------------------------

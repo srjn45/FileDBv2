@@ -425,6 +425,95 @@ func (c *Collection) segmentPath(n uint64) string {
 	return filepath.Join(c.dir, fmt.Sprintf("seg_%06d.ndjson", n))
 }
 
+// ReserveID atomically increments and returns the next id without writing
+// anything to disk. Used by transaction staging so the caller receives the
+// assigned id immediately; the actual segment write happens at CommitTx.
+func (c *Collection) ReserveID() uint64 {
+	return c.idSeq.Add(1)
+}
+
+// CommitTx applies a slice of staged transaction ops atomically under the
+// collection write lock. It pre-validates all update/delete ops first — if any
+// ID no longer exists the entire commit is rejected with no partial writes.
+func (c *Collection) CommitTx(ops []txOp) error {
+	if len(ops) == 0 {
+		return nil
+	}
+
+	c.mu.Lock()
+
+	// Pre-validate: ensure every update/delete target still exists.
+	for _, op := range ops {
+		if op.kind == txOpUpdate || op.kind == txOpDelete {
+			if _, ok := c.index.Get(op.id); !ok {
+				c.mu.Unlock()
+				return fmt.Errorf("tx commit: id %d was deleted before commit", op.id)
+			}
+		}
+	}
+
+	// Apply all ops sequentially.
+	var events []WatchEvent
+	var maxInsertID uint64
+
+	for _, op := range ops {
+		switch op.kind {
+		case txOpInsert:
+			e := store.NewInsert(op.id, op.data)
+			e.Ts = op.ts
+			offset, err := c.active.Append(e)
+			if err != nil {
+				c.mu.Unlock()
+				return fmt.Errorf("tx commit: insert id %d: %w", op.id, err)
+			}
+			c.index.Set(op.id, IndexEntry{SegmentPath: c.active.Path(), Offset: offset})
+			if op.id > maxInsertID {
+				maxInsertID = op.id
+			}
+			events = append(events, WatchEvent{Op: store.OpInsert, ID: op.id, Data: op.data, Ts: op.ts})
+
+		case txOpUpdate:
+			e := store.NewUpdate(op.id, op.data)
+			e.Ts = op.ts
+			offset, err := c.active.Append(e)
+			if err != nil {
+				c.mu.Unlock()
+				return fmt.Errorf("tx commit: update id %d: %w", op.id, err)
+			}
+			c.index.Set(op.id, IndexEntry{SegmentPath: c.active.Path(), Offset: offset})
+			events = append(events, WatchEvent{Op: store.OpUpdate, ID: op.id, Data: op.data, Ts: op.ts})
+
+		case txOpDelete:
+			e := store.NewDelete(op.id)
+			e.Ts = op.ts
+			if _, err := c.active.Append(e); err != nil {
+				c.mu.Unlock()
+				return fmt.Errorf("tx commit: delete id %d: %w", op.id, err)
+			}
+			c.index.Delete(op.id)
+			events = append(events, WatchEvent{Op: store.OpDelete, ID: op.id, Ts: op.ts})
+		}
+	}
+
+	needRotate := c.active.Size() >= c.cfg.SegmentMaxSize
+	c.mu.Unlock()
+
+	if needRotate {
+		_ = c.rotateSegment()
+	}
+
+	for _, ev := range events {
+		c.emit(ev)
+	}
+
+	if maxInsertID > 0 {
+		_ = persistMeta(filepath.Join(c.dir, metaFilename),
+			collectionMeta{IDCounter: c.idSeq.Load(), CreatedAt: c.createdAt})
+	}
+
+	return nil
+}
+
 // Name returns the collection name.
 func (c *Collection) Name() string { return c.name }
 
