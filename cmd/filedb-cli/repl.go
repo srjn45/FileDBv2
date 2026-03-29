@@ -208,6 +208,7 @@ func tokenize(s string) []string {
 		switch {
 		case r == '"' || r == '\'':
 			inQuote = !inQuote
+			current.WriteRune(r)
 		case r == ' ' && !inQuote:
 			if current.Len() > 0 {
 				tokens = append(tokens, current.String())

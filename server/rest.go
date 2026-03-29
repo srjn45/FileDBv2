@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"net/http"
+	"strings"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	pb "github.com/srjn45/filedbv2/internal/pb/proto"
@@ -11,10 +12,18 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
+// headerMatcher forwards x-api-key and all default grpc-gateway headers.
+func headerMatcher(key string) (string, bool) {
+	if strings.ToLower(key) == "x-api-key" {
+		return "x-api-key", true
+	}
+	return runtime.DefaultHeaderMatcher(key)
+}
+
 // NewRESTGateway returns an http.Handler that proxies requests to the gRPC
 // server listening on grpcAddr via the grpc-gateway.
 func NewRESTGateway(ctx context.Context, grpcAddr string) (http.Handler, error) {
-	mux := runtime.NewServeMux()
+	mux := runtime.NewServeMux(runtime.WithIncomingHeaderMatcher(headerMatcher))
 	opts := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
 
 	if err := pb.RegisterFileDBHandlerFromEndpoint(ctx, mux, grpcAddr, opts); err != nil {
@@ -26,7 +35,7 @@ func NewRESTGateway(ctx context.Context, grpcAddr string) (http.Handler, error) 
 // NewRESTGatewayUnix returns an http.Handler that dials the gRPC server via a
 // Unix domain socket.
 func NewRESTGatewayUnix(ctx context.Context, socketPath string) (http.Handler, error) {
-	mux := runtime.NewServeMux()
+	mux := runtime.NewServeMux(runtime.WithIncomingHeaderMatcher(headerMatcher))
 	opts := []grpc.DialOption{
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {

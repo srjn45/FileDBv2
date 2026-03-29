@@ -395,7 +395,10 @@ func buildFilter(raw map[string]any) (*pb.Filter, error) {
 
 	field, _ := raw["field"].(string)
 	opStr, _ := raw["op"].(string)
-	val, _ := raw["value"].(string)
+	// Re-encode the value as JSON so filter.go can unmarshal it correctly
+	// regardless of whether it came in as a string, number, or bool.
+	valBytes, _ := json.Marshal(raw["value"])
+	val := string(valBytes)
 
 	opMap := map[string]pb.FilterOp{
 		"eq": pb.FilterOp_EQ, "neq": pb.FilterOp_NEQ,
