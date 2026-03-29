@@ -125,8 +125,10 @@ func insertCmd(flags *cliFlags) *cobra.Command {
 
 func findCmd(flags *cliFlags) *cobra.Command {
 	var (
-		limit  uint32
-		offset uint32
+		limit      uint32
+		offset     uint32
+		orderBy    string
+		descending bool
 	)
 	cmd := &cobra.Command{
 		Use:   "find <collection> [filter-json]",
@@ -143,6 +145,8 @@ func findCmd(flags *cliFlags) *cobra.Command {
 				Collection: args[0],
 				Limit:      limit,
 				Offset:     offset,
+				OrderBy:    orderBy,
+				Descending: descending,
 			}
 
 			if len(args) == 2 {
@@ -171,6 +175,8 @@ func findCmd(flags *cliFlags) *cobra.Command {
 	}
 	cmd.Flags().Uint32Var(&limit, "limit", 0, "Max records to return (0 = all)")
 	cmd.Flags().Uint32Var(&offset, "offset", 0, "Skip N records")
+	cmd.Flags().StringVar(&orderBy, "order-by", "", "Field name to sort by")
+	cmd.Flags().BoolVar(&descending, "descending", false, "Sort in descending order")
 	return cmd
 }
 

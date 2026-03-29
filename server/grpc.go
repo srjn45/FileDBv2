@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -144,6 +145,27 @@ func (s *GRPCServer) Find(req *pb.FindRequest, stream pb.FileDB_FindServer) erro
 	results, err := col.Scan(f)
 	if err != nil {
 		return status.Errorf(codes.Internal, "scan: %v", err)
+	}
+
+	// Sort if requested.
+	if req.OrderBy != "" {
+		sort.Slice(results, func(i, j int) bool {
+			vi := fmt.Sprintf("%v", results[i].Data[req.OrderBy])
+			vj := fmt.Sprintf("%v", results[j].Data[req.OrderBy])
+			// Numeric comparison when both values parse as float64.
+			fi, ei := results[i].Data[req.OrderBy].(float64)
+			fj, ej := results[j].Data[req.OrderBy].(float64)
+			if ei && ej {
+				if req.Descending {
+					return fi > fj
+				}
+				return fi < fj
+			}
+			if req.Descending {
+				return vi > vj
+			}
+			return vi < vj
+		})
 	}
 
 	// Apply offset and limit.
