@@ -386,6 +386,80 @@ func importCmd(flags *cliFlags) *cobra.Command {
 	}
 }
 
+// ---- Secondary indexes ----------------------------------------------------
+
+func ensureIndexCmd(flags *cliFlags) *cobra.Command {
+	return &cobra.Command{
+		Use:   "ensure-index <collection> <field>",
+		Short: "Create a secondary index on a field (idempotent)",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, client, cleanup, err := connect(flags)
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+			resp, err := client.EnsureIndex(ctxWithAuth(flags), &pb.EnsureIndexRequest{
+				Collection: args[0], Field: args[1],
+			})
+			if err != nil {
+				return err
+			}
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "index on %q ready for collection %q\n", resp.Field, resp.Collection)
+			return nil
+		},
+	}
+}
+
+func dropIndexCmd(flags *cliFlags) *cobra.Command {
+	return &cobra.Command{
+		Use:   "drop-index <collection> <field>",
+		Short: "Drop the secondary index on a field",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, client, cleanup, err := connect(flags)
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+			if _, err := client.DropIndex(ctxWithAuth(flags), &pb.DropIndexRequest{
+				Collection: args[0], Field: args[1],
+			}); err != nil {
+				return err
+			}
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "dropped index on %q\n", args[1])
+			return nil
+		},
+	}
+}
+
+func listIndexesCmd(flags *cliFlags) *cobra.Command {
+	return &cobra.Command{
+		Use:   "indexes <collection>",
+		Short: "List all secondary indexes on a collection",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, client, cleanup, err := connect(flags)
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+			resp, err := client.ListIndexes(ctxWithAuth(flags), &pb.ListIndexesRequest{Collection: args[0]})
+			if err != nil {
+				return err
+			}
+			if len(resp.Fields) == 0 {
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "(no indexes)")
+				return nil
+			}
+			for _, f := range resp.Fields {
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), f)
+			}
+			return nil
+		},
+	}
+}
+
 // ---- Transactions ---------------------------------------------------------
 
 func beginTxCmd(flags *cliFlags) *cobra.Command {

@@ -239,6 +239,41 @@ func (s *GRPCServer) Delete(ctx context.Context, req *pb.DeleteRequest) (*pb.Del
 	return &pb.DeleteResponse{Ok: true}, nil
 }
 
+// ---- Secondary indexes ----------------------------------------------------
+
+func (s *GRPCServer) EnsureIndex(_ context.Context, req *pb.EnsureIndexRequest) (*pb.EnsureIndexResponse, error) {
+	if req.Field == "" {
+		return nil, status.Error(codes.InvalidArgument, "field required")
+	}
+	col, err := s.db.Collection(req.Collection)
+	if err != nil {
+		return nil, status.Errorf(codes.NotFound, "%v", err)
+	}
+	if err := col.EnsureIndex(req.Field); err != nil {
+		return nil, status.Errorf(codes.Internal, "ensure index: %v", err)
+	}
+	return &pb.EnsureIndexResponse{Collection: req.Collection, Field: req.Field}, nil
+}
+
+func (s *GRPCServer) DropIndex(_ context.Context, req *pb.DropIndexRequest) (*pb.DropIndexResponse, error) {
+	col, err := s.db.Collection(req.Collection)
+	if err != nil {
+		return nil, status.Errorf(codes.NotFound, "%v", err)
+	}
+	if err := col.DropIndex(req.Field); err != nil {
+		return nil, status.Errorf(codes.NotFound, "%v", err)
+	}
+	return &pb.DropIndexResponse{Ok: true}, nil
+}
+
+func (s *GRPCServer) ListIndexes(_ context.Context, req *pb.ListIndexesRequest) (*pb.ListIndexesResponse, error) {
+	col, err := s.db.Collection(req.Collection)
+	if err != nil {
+		return nil, status.Errorf(codes.NotFound, "%v", err)
+	}
+	return &pb.ListIndexesResponse{Fields: col.ListIndexes()}, nil
+}
+
 // ---- Watch ----------------------------------------------------------------
 
 func (s *GRPCServer) Watch(req *pb.WatchRequest, stream pb.FileDB_WatchServer) error {

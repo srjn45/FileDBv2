@@ -4,7 +4,7 @@
 // - protoc             (unknown)
 // source: proto/filedb.proto
 
-package pb
+package proto
 
 import (
 	context "context"
@@ -28,6 +28,9 @@ const (
 	FileDB_Find_FullMethodName             = "/filedb.v1.FileDB/Find"
 	FileDB_Update_FullMethodName           = "/filedb.v1.FileDB/Update"
 	FileDB_Delete_FullMethodName           = "/filedb.v1.FileDB/Delete"
+	FileDB_EnsureIndex_FullMethodName      = "/filedb.v1.FileDB/EnsureIndex"
+	FileDB_DropIndex_FullMethodName        = "/filedb.v1.FileDB/DropIndex"
+	FileDB_ListIndexes_FullMethodName      = "/filedb.v1.FileDB/ListIndexes"
 	FileDB_BeginTx_FullMethodName          = "/filedb.v1.FileDB/BeginTx"
 	FileDB_CommitTx_FullMethodName         = "/filedb.v1.FileDB/CommitTx"
 	FileDB_RollbackTx_FullMethodName       = "/filedb.v1.FileDB/RollbackTx"
@@ -49,6 +52,9 @@ type FileDBClient interface {
 	Find(ctx context.Context, in *FindRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[FindResponse], error)
 	Update(ctx context.Context, in *UpdateRequest, opts ...grpc.CallOption) (*UpdateResponse, error)
 	Delete(ctx context.Context, in *DeleteRequest, opts ...grpc.CallOption) (*DeleteResponse, error)
+	EnsureIndex(ctx context.Context, in *EnsureIndexRequest, opts ...grpc.CallOption) (*EnsureIndexResponse, error)
+	DropIndex(ctx context.Context, in *DropIndexRequest, opts ...grpc.CallOption) (*DropIndexResponse, error)
+	ListIndexes(ctx context.Context, in *ListIndexesRequest, opts ...grpc.CallOption) (*ListIndexesResponse, error)
 	BeginTx(ctx context.Context, in *BeginTxRequest, opts ...grpc.CallOption) (*BeginTxResponse, error)
 	CommitTx(ctx context.Context, in *CommitTxRequest, opts ...grpc.CallOption) (*CommitTxResponse, error)
 	RollbackTx(ctx context.Context, in *RollbackTxRequest, opts ...grpc.CallOption) (*RollbackTxResponse, error)
@@ -163,6 +169,36 @@ func (c *fileDBClient) Delete(ctx context.Context, in *DeleteRequest, opts ...gr
 	return out, nil
 }
 
+func (c *fileDBClient) EnsureIndex(ctx context.Context, in *EnsureIndexRequest, opts ...grpc.CallOption) (*EnsureIndexResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(EnsureIndexResponse)
+	err := c.cc.Invoke(ctx, FileDB_EnsureIndex_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *fileDBClient) DropIndex(ctx context.Context, in *DropIndexRequest, opts ...grpc.CallOption) (*DropIndexResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DropIndexResponse)
+	err := c.cc.Invoke(ctx, FileDB_DropIndex_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *fileDBClient) ListIndexes(ctx context.Context, in *ListIndexesRequest, opts ...grpc.CallOption) (*ListIndexesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListIndexesResponse)
+	err := c.cc.Invoke(ctx, FileDB_ListIndexes_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *fileDBClient) BeginTx(ctx context.Context, in *BeginTxRequest, opts ...grpc.CallOption) (*BeginTxResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(BeginTxResponse)
@@ -236,6 +272,9 @@ type FileDBServer interface {
 	Find(*FindRequest, grpc.ServerStreamingServer[FindResponse]) error
 	Update(context.Context, *UpdateRequest) (*UpdateResponse, error)
 	Delete(context.Context, *DeleteRequest) (*DeleteResponse, error)
+	EnsureIndex(context.Context, *EnsureIndexRequest) (*EnsureIndexResponse, error)
+	DropIndex(context.Context, *DropIndexRequest) (*DropIndexResponse, error)
+	ListIndexes(context.Context, *ListIndexesRequest) (*ListIndexesResponse, error)
 	BeginTx(context.Context, *BeginTxRequest) (*BeginTxResponse, error)
 	CommitTx(context.Context, *CommitTxRequest) (*CommitTxResponse, error)
 	RollbackTx(context.Context, *RollbackTxRequest) (*RollbackTxResponse, error)
@@ -277,6 +316,15 @@ func (UnimplementedFileDBServer) Update(context.Context, *UpdateRequest) (*Updat
 }
 func (UnimplementedFileDBServer) Delete(context.Context, *DeleteRequest) (*DeleteResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Delete not implemented")
+}
+func (UnimplementedFileDBServer) EnsureIndex(context.Context, *EnsureIndexRequest) (*EnsureIndexResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method EnsureIndex not implemented")
+}
+func (UnimplementedFileDBServer) DropIndex(context.Context, *DropIndexRequest) (*DropIndexResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DropIndex not implemented")
+}
+func (UnimplementedFileDBServer) ListIndexes(context.Context, *ListIndexesRequest) (*ListIndexesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListIndexes not implemented")
 }
 func (UnimplementedFileDBServer) BeginTx(context.Context, *BeginTxRequest) (*BeginTxResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method BeginTx not implemented")
@@ -469,6 +517,60 @@ func _FileDB_Delete_Handler(srv interface{}, ctx context.Context, dec func(inter
 	return interceptor(ctx, in, info, handler)
 }
 
+func _FileDB_EnsureIndex_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(EnsureIndexRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(FileDBServer).EnsureIndex(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: FileDB_EnsureIndex_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(FileDBServer).EnsureIndex(ctx, req.(*EnsureIndexRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _FileDB_DropIndex_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DropIndexRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(FileDBServer).DropIndex(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: FileDB_DropIndex_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(FileDBServer).DropIndex(ctx, req.(*DropIndexRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _FileDB_ListIndexes_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListIndexesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(FileDBServer).ListIndexes(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: FileDB_ListIndexes_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(FileDBServer).ListIndexes(ctx, req.(*ListIndexesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _FileDB_BeginTx_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(BeginTxRequest)
 	if err := dec(in); err != nil {
@@ -590,6 +692,18 @@ var FileDB_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Delete",
 			Handler:    _FileDB_Delete_Handler,
+		},
+		{
+			MethodName: "EnsureIndex",
+			Handler:    _FileDB_EnsureIndex_Handler,
+		},
+		{
+			MethodName: "DropIndex",
+			Handler:    _FileDB_DropIndex_Handler,
+		},
+		{
+			MethodName: "ListIndexes",
+			Handler:    _FileDB_ListIndexes_Handler,
 		},
 		{
 			MethodName: "BeginTx",

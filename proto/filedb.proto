@@ -77,6 +77,27 @@ service FileDB {
     };
   }
 
+  // --- Secondary indexes ---
+
+  rpc EnsureIndex(EnsureIndexRequest) returns (EnsureIndexResponse) {
+    option (google.api.http) = {
+      post: "/v1/{collection}/indexes"
+      body: "*"
+    };
+  }
+
+  rpc DropIndex(DropIndexRequest) returns (DropIndexResponse) {
+    option (google.api.http) = {
+      delete: "/v1/{collection}/indexes/{field}"
+    };
+  }
+
+  rpc ListIndexes(ListIndexesRequest) returns (ListIndexesResponse) {
+    option (google.api.http) = {
+      get: "/v1/{collection}/indexes"
+    };
+  }
+
   // --- Transactions ---
 
   rpc BeginTx(BeginTxRequest) returns (BeginTxResponse);
@@ -209,6 +230,19 @@ message DeleteRequest {
   uint64 id         = 2;
 }
 message DeleteResponse { bool ok = 1; }
+
+// ---------------------------------------------------------------------------
+// Secondary indexes
+// ---------------------------------------------------------------------------
+
+message EnsureIndexRequest  { string collection = 1; string field = 2; }
+message EnsureIndexResponse { string collection = 1; string field = 2; }
+
+message DropIndexRequest    { string collection = 1; string field = 2; }
+message DropIndexResponse   { bool   ok         = 1; }
+
+message ListIndexesRequest  { string collection = 1; }
+message ListIndexesResponse { repeated string fields = 1; }
 
 // ---------------------------------------------------------------------------
 // Transactions

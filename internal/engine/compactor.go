@@ -99,8 +99,30 @@ func (c *Collection) compact() error {
 
 	c.mu.Unlock()
 
-	// Persist updated index.
+	// Persist updated primary index.
 	_ = c.index.Persist(filepath.Join(c.dir, "index.json"))
+
+	// Rebuild and persist every secondary index from the new segment layout.
+	c.sidxMu.RLock()
+	sidxCopy := make(map[string]*SecondaryIndex, len(c.sidxMap))
+	for f, s := range c.sidxMap {
+		sidxCopy[f] = s
+	}
+	c.sidxMu.RUnlock()
+
+	c.mu.RLock()
+	allSegs := make([]*Segment, 0, len(c.sealed)+1)
+	allSegs = append(allSegs, c.sealed...)
+	allSegs = append(allSegs, c.active)
+	c.mu.RUnlock()
+
+	for field, sidx := range sidxCopy {
+		if err := sidx.rebuild(allSegs); err != nil {
+			return fmt.Errorf("compactor: rebuild secondary index %q: %w", field, err)
+		}
+		_ = sidx.Persist(sidxFilePath(c.dir, field))
+	}
+
 	return nil
 }
 

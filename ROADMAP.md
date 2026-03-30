@@ -69,6 +69,7 @@ CreateCollection  DropCollection  ListCollections
 Insert  InsertMany  FindById  Find (streaming)  Update  Delete
 Watch (server-streaming change feed)
 CollectionStats
+EnsureIndex  DropIndex  ListIndexes
 BeginTx  CommitTx  RollbackTx
 ```
 
@@ -77,6 +78,7 @@ BeginTx  CommitTx  RollbackTx
 - [x] `internal/engine/segment.go` — Append, ReadAt, ScanAll, Seal, crash recovery (partial line truncation)
 - [x] `internal/engine/index.go` — In-memory `map[uint64]IndexEntry`, SHA-256 checksum persist/load, Rebuild from segments
 - [x] `internal/engine/collection.go` — RWMutex, Insert/Update/Delete/FindByID/Scan, segment rotation, Watch subscribers
+- [x] `internal/engine/secondary_index.go` — Field-value → ID set inverted index, EnsureIndex/DropIndex/ListIndexes/IndexLookup, persist/load/rebuild
 - [x] `internal/engine/compactor.go` — Background goroutine, dirty-ratio trigger, timer trigger, rebalancer (merge small segments)
 - [x] `internal/engine/db.go` — Collection registry, Open/CreateCollection/DropCollection/ListCollections/Close
 - [x] `internal/query/filter.go` — FieldFilter, AndFilter, OrFilter, ops: eq/neq/gt/gte/lt/lte/contains/regex
@@ -111,10 +113,11 @@ BeginTx  CommitTx  RollbackTx
 - [x] `internal/engine/collection_test.go` — insert/findById, update, delete, scan, persist across reopen, concurrent writes (race detector), watcher
 - [x] `internal/engine/index_test.go` — Set/Get/Delete, Len, Persist+Load, checksum mismatch, Rebuild from segments
 - [x] `internal/engine/compactor_test.go` — isDirty threshold, compact reduces segments, records readable after compact, rebalancer merges tiny segments
+- [x] `internal/engine/secondary_index_test.go` — EnsureIndex/DropIndex/ListIndexes, insert/update/delete maintenance, Scan uses index, Scan falls back, Persist+Load, rebuild from existing data, survives compaction
 - [x] `internal/query/filter_test.go` — all 8 ops, And/Or/nested, MatchAll, missing field, invalid regex
 - [x] `server/grpc_integration_test.go` — in-process gRPC server, CRUD, Find with filter/order/limit, transactions, error paths
 
-**All 40+ tests pass with `go test ./... -race`**
+**All 50+ tests pass with `go test ./... -race`**
 
 ---
 
@@ -144,10 +147,14 @@ Each client needs:
 
 ### Low Priority / Future
 
-#### 3. Secondary indexes
-Currently only `FindById` uses the index. `Find` does a full segment scan. A secondary index on a user-specified field would make filtered queries O(log n) instead of O(n).
-
-**Design consideration:** secondary indexes need to be updated on every insert/update/delete AND rebuilt during compaction. Adds complexity — implement after transactions are solid.
+#### ~~3. Secondary indexes~~ ✅ Done
+`internal/engine/secondary_index.go` — in-memory inverted index (field-value → ID set).
+- `EnsureIndex(field)` / `DropIndex(field)` / `ListIndexes()` on `Collection`
+- `Scan` uses the index for single eq-filters (O(1)), falls back to full scan otherwise
+- Index maintained on Insert/Update/Delete and rebuilt after compaction
+- Persisted to `sidx_<field>.json` with SHA-256 checksum, reloaded on startup
+- gRPC: `EnsureIndex` / `DropIndex` / `ListIndexes` RPCs + REST via grpc-gateway
+- CLI: `ensure-index`, `drop-index`, `indexes` commands
 
 #### 4. TLS support
 Currently gRPC uses `insecure.NewCredentials()`. Add optional TLS via:

@@ -55,6 +55,10 @@ type Collection struct {
 	watchers     map[uint64]chan WatchEvent
 	watcherIDSeq atomic.Uint64
 
+	// Secondary indexes: field name → index.
+	sidxMu  sync.RWMutex
+	sidxMap map[string]*SecondaryIndex
+
 	// Compactor control.
 	compactC  chan struct{} // signal: run compaction now
 	closeOnce sync.Once
@@ -75,6 +79,7 @@ func OpenCollection(name, dataDir string, cfg CollectionConfig) (*Collection, er
 		dir:      dir,
 		cfg:      cfg,
 		index:    newIndex(),
+		sidxMap:  make(map[string]*SecondaryIndex),
 		watchers: make(map[uint64]chan WatchEvent),
 		compactC: make(chan struct{}, 1),
 		closed:   make(chan struct{}),
@@ -140,6 +145,24 @@ func (c *Collection) load() error {
 		_ = c.index.Persist(indexPath)
 	}
 
+	// Reload any previously persisted secondary indexes.
+	if sidxPaths, _ := filepath.Glob(filepath.Join(c.dir, "sidx_*.json")); len(sidxPaths) > 0 {
+		for _, p := range sidxPaths {
+			// derive field name from filename: sidx_<field>.json
+			base := filepath.Base(p)
+			field := base[len("sidx_") : len(base)-len(".json")]
+			sidx := newSecondaryIndex(field)
+			if err := sidx.Load(p); err != nil {
+				// stale/corrupt — rebuild from segments
+				if rbErr := sidx.rebuild(all); rbErr != nil {
+					return fmt.Errorf("collection: rebuild secondary index %q: %w", field, rbErr)
+				}
+				_ = sidx.Persist(p)
+			}
+			c.sidxMap[field] = sidx
+		}
+	}
+
 	// Restore the id counter.
 	// Fast path: load from meta.json written by a previous clean run.
 	metaPath := filepath.Join(c.dir, metaFilename)
@@ -194,6 +217,7 @@ func (c *Collection) Insert(data map[string]any) (uint64, time.Time, error) {
 		return 0, time.Time{}, fmt.Errorf("collection: insert: %w", err)
 	}
 	c.index.Set(id, IndexEntry{SegmentPath: c.active.Path(), Offset: offset})
+	c.sidxIndexEntry(id, data)
 	needRotate := c.active.Size() >= c.cfg.SegmentMaxSize
 	c.mu.Unlock()
 
@@ -227,6 +251,7 @@ func (c *Collection) Update(id uint64, data map[string]any) (time.Time, error) {
 		return time.Time{}, fmt.Errorf("collection: update: %w", err)
 	}
 	c.index.Set(id, IndexEntry{SegmentPath: c.active.Path(), Offset: offset})
+	c.sidxUpdateEntry(id, data)
 	needRotate := c.active.Size() >= c.cfg.SegmentMaxSize
 	c.mu.Unlock()
 
@@ -252,6 +277,7 @@ func (c *Collection) Delete(id uint64) error {
 		return fmt.Errorf("collection: delete: %w", err)
 	}
 	c.index.Delete(id)
+	c.sidxRemoveEntry(id)
 	c.mu.Unlock()
 
 	c.emit(WatchEvent{Op: store.OpDelete, ID: id, Ts: e.Ts})
@@ -281,12 +307,22 @@ func (c *Collection) FindByID(id uint64) (map[string]any, time.Time, error) {
 }
 
 // Scan iterates all live records and returns those matching f.
-// Results are returned in an undefined order (segment → entry order).
+// If f is a simple eq-filter on an indexed field, the secondary index is used
+// to look up candidate IDs in O(1) instead of scanning every segment.
+// Results are returned in an undefined order.
 func (c *Collection) Scan(f query.Filter) ([]ScanResult, error) {
 	if f == nil {
 		f = query.MatchAll
 	}
 
+	// Fast path: single FieldFilter with OpEq on an indexed field.
+	if ff, ok := f.(*query.FieldFilter); ok && ff.Op == query.OpEq {
+		if ids, hit := c.IndexLookup(ff.Field, filterValueToIndexKey(ff.Value)); hit {
+			return c.fetchByIDs(ids, f)
+		}
+	}
+
+	// Slow path: full segment scan.
 	c.mu.RLock()
 	allSegs := make([]*Segment, 0, len(c.sealed)+1)
 	allSegs = append(allSegs, c.sealed...)
@@ -312,6 +348,24 @@ func (c *Collection) Scan(f query.Filter) ([]ScanResult, error) {
 		}
 		if f.Match(e.Data) {
 			results = append(results, ScanResult{ID: e.ID, Data: e.Data, Ts: e.Ts})
+		}
+	}
+	return results, nil
+}
+
+// fetchByIDs resolves a slice of IDs via the primary index and returns their
+// current records. It post-filters with f so that the caller can still apply
+// any additional predicates beyond the eq-index lookup.
+func (c *Collection) fetchByIDs(ids []uint64, f query.Filter) ([]ScanResult, error) {
+	var results []ScanResult
+	for _, id := range ids {
+		data, ts, err := c.FindByID(id)
+		if err != nil {
+			// record was deleted since the index was consulted — skip
+			continue
+		}
+		if f.Match(data) {
+			results = append(results, ScanResult{ID: id, Data: data, Ts: ts})
 		}
 	}
 	return results, nil
@@ -467,6 +521,7 @@ func (c *Collection) CommitTx(ops []txOp) error {
 				return fmt.Errorf("tx commit: insert id %d: %w", op.id, err)
 			}
 			c.index.Set(op.id, IndexEntry{SegmentPath: c.active.Path(), Offset: offset})
+			c.sidxIndexEntry(op.id, op.data)
 			if op.id > maxInsertID {
 				maxInsertID = op.id
 			}
@@ -481,6 +536,7 @@ func (c *Collection) CommitTx(ops []txOp) error {
 				return fmt.Errorf("tx commit: update id %d: %w", op.id, err)
 			}
 			c.index.Set(op.id, IndexEntry{SegmentPath: c.active.Path(), Offset: offset})
+			c.sidxUpdateEntry(op.id, op.data)
 			events = append(events, WatchEvent{Op: store.OpUpdate, ID: op.id, Data: op.data, Ts: op.ts})
 
 		case txOpDelete:
@@ -491,6 +547,7 @@ func (c *Collection) CommitTx(ops []txOp) error {
 				return fmt.Errorf("tx commit: delete id %d: %w", op.id, err)
 			}
 			c.index.Delete(op.id)
+			c.sidxRemoveEntry(op.id)
 			events = append(events, WatchEvent{Op: store.OpDelete, ID: op.id, Ts: op.ts})
 		}
 	}
@@ -532,6 +589,114 @@ func (c *Collection) Close() error {
 	if err := c.index.Persist(filepath.Join(c.dir, "index.json")); err != nil {
 		return err
 	}
+	c.sidxMu.RLock()
+	for field, sidx := range c.sidxMap {
+		_ = sidx.Persist(sidxFilePath(c.dir, field))
+	}
+	c.sidxMu.RUnlock()
 	return persistMeta(filepath.Join(c.dir, metaFilename),
 		collectionMeta{IDCounter: c.idSeq.Load(), CreatedAt: c.createdAt})
+}
+
+// ---- Secondary index helpers (called under c.mu write lock) ----------------
+
+// sidxIndexEntry adds data[field] to every secondary index for a new id.
+func (c *Collection) sidxIndexEntry(id uint64, data map[string]any) {
+	c.sidxMu.RLock()
+	for field, sidx := range c.sidxMap {
+		if val, ok := data[field]; ok {
+			sidx.add(toIndexKey(val), id)
+		}
+	}
+	c.sidxMu.RUnlock()
+}
+
+// sidxUpdateEntry moves id to the new field values in every secondary index.
+func (c *Collection) sidxUpdateEntry(id uint64, data map[string]any) {
+	c.sidxMu.RLock()
+	for field, sidx := range c.sidxMap {
+		if val, ok := data[field]; ok {
+			sidx.update(id, toIndexKey(val))
+		} else {
+			sidx.remove(id)
+		}
+	}
+	c.sidxMu.RUnlock()
+}
+
+// sidxRemoveEntry removes id from every secondary index.
+func (c *Collection) sidxRemoveEntry(id uint64) {
+	c.sidxMu.RLock()
+	for _, sidx := range c.sidxMap {
+		sidx.remove(id)
+	}
+	c.sidxMu.RUnlock()
+}
+
+// ---- Secondary index management (public API) --------------------------------
+
+// EnsureIndex creates a secondary index on field if one does not already exist.
+// It immediately rebuilds the index from all current segments.
+func (c *Collection) EnsureIndex(field string) error {
+	c.sidxMu.Lock()
+	if _, exists := c.sidxMap[field]; exists {
+		c.sidxMu.Unlock()
+		return nil
+	}
+	sidx := newSecondaryIndex(field)
+	c.sidxMap[field] = sidx
+	c.sidxMu.Unlock()
+
+	// Rebuild under collection read lock so we get a consistent snapshot.
+	c.mu.RLock()
+	all := make([]*Segment, 0, len(c.sealed)+1)
+	all = append(all, c.sealed...)
+	all = append(all, c.active)
+	c.mu.RUnlock()
+
+	if err := sidx.rebuild(all); err != nil {
+		c.sidxMu.Lock()
+		delete(c.sidxMap, field)
+		c.sidxMu.Unlock()
+		return fmt.Errorf("collection: ensure index %q: %w", field, err)
+	}
+	return sidx.Persist(sidxFilePath(c.dir, field))
+}
+
+// DropIndex removes the secondary index for field and deletes its file.
+func (c *Collection) DropIndex(field string) error {
+	c.sidxMu.Lock()
+	if _, exists := c.sidxMap[field]; !exists {
+		c.sidxMu.Unlock()
+		return fmt.Errorf("collection: index on %q not found", field)
+	}
+	delete(c.sidxMap, field)
+	c.sidxMu.Unlock()
+	_ = os.Remove(sidxFilePath(c.dir, field))
+	return nil
+}
+
+// ListIndexes returns the field names of all active secondary indexes.
+func (c *Collection) ListIndexes() []string {
+	c.sidxMu.RLock()
+	fields := make([]string, 0, len(c.sidxMap))
+	for f := range c.sidxMap {
+		fields = append(fields, f)
+	}
+	c.sidxMu.RUnlock()
+	sort.Strings(fields)
+	return fields
+}
+
+// IndexLookup returns the IDs of records whose field equals value, using the
+// secondary index. Returns nil if no index exists for field (caller falls back
+// to Scan).
+func (c *Collection) IndexLookup(field, value string) ([]uint64, bool) {
+	c.sidxMu.RLock()
+	sidx, ok := c.sidxMap[field]
+	c.sidxMu.RUnlock()
+	if !ok {
+		return nil, false
+	}
+	return sidx.Lookup(value), true
 }
