@@ -344,6 +344,54 @@ When `--tls-ca` is given, the CLI dials TCP with TLS, verifying the server certi
 
 ---
 
+## JavaScript / TypeScript SDK
+
+Install:
+
+```bash
+npm install filedbv2
+```
+
+```typescript
+import { FileDB } from 'filedbv2';
+
+const db = new FileDB('localhost', 5433, 'dev-key');
+
+await db.createCollection('users');
+
+const id = await db.insert('users', { name: 'Alice', age: 30 });
+
+const record = await db.findById('users', id);
+
+// Streaming find — use `for await`
+for await (const r of db.find('users', { filter: { field: 'role', op: 'eq', value: 'admin' } })) {
+  console.log(r);
+}
+
+// Or collect all results at once
+const admins = await db.findAll('users', {
+  filter: { field: 'role', op: 'eq', value: 'admin' },
+  orderBy: 'name',
+});
+
+await db.update('users', id, { name: 'Alice', age: 31 });
+await db.delete('users', id);
+await db.dropCollection('users');
+db.close();
+```
+
+CommonJS works too: `const { FileDB } = require('filedbv2')`.
+
+With TLS:
+
+```typescript
+const db = FileDB.fromTlsCertPath('myserver.example.com', 5433, 'api-key', '/path/to/ca.crt');
+```
+
+See [clients/js/README.md](../clients/js/README.md) for the full API reference, filter syntax, watch streaming, and transaction usage.
+
+---
+
 ## Java SDK
 
 Add the dependency to your Gradle or Maven project:

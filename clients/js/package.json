@@ -1,0 +1,43 @@
+{
+  "name": "filedbv2",
+  "version": "0.1.0",
+  "description": "TypeScript/JavaScript client for FileDB v2",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "require": "./dist/index.js",
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist/",
+    "proto/"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "generate": "bash generate.sh",
+    "clean": "rm -rf dist/",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@grpc/grpc-js": "^1.10.0",
+    "@grpc/proto-loader": "^0.7.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "ts-node": "^10.9.0",
+    "typescript": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "filedb",
+    "grpc",
+    "database",
+    "client"
+  ],
+  "license": "MIT"
+}

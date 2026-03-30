@@ -15,7 +15,7 @@ Each client is a thin wrapper over the gRPC API defined in `proto/filedb.proto`.
 | # | Language | Package Registry | Directory | Status |
 |---|---|---|---|---|
 | 1 | Python | PyPI (`pip install filedbv2`) | `clients/python/` | ⬜ Not started |
-| 2 | TypeScript / JavaScript | npm (`npm install filedbv2`) | `clients/js/` | ⬜ Not started |
+| 2 | TypeScript / JavaScript | npm (`npm install filedbv2`) | `clients/js/` | ✅ Done |
 | 3 | PHP | Packagist (`composer require srjn45/filedbv2`) | `clients/php/` | ⬜ Not started |
 | 4 | Java | Maven Central (`com.srjn45:filedbv2-client`) | `clients/java/` | ✅ Done |
 | 5 | Ruby | RubyGems (`gem install filedbv2`) | `clients/ruby/` | ⬜ Not started |
@@ -133,49 +133,49 @@ docs(clients/python): add README and getting-started entry
 **Target:** Node.js 18+, TypeScript 5+
 
 ### 2.1 Scaffold
-- [ ] `clients/js/package.json`
+- [x] `clients/js/package.json`
   - name: `filedbv2`, version `0.1.0`
-  - deps: `@grpc/grpc-js`, `@grpc/proto-loader`, `google-protobuf`
-  - devDeps: `typescript`, `grpc-tools`, `grpc_tools_node_protoc_ts`, `ts-node`
-  - scripts: `build`, `generate`, `test`
-- [ ] `clients/js/tsconfig.json` — target ES2020, declaration: true, outDir: `dist/`
-- [ ] `clients/js/src/proto/` directory for generated stubs
-- [ ] `clients/js/generate.sh` — runs `grpc_tools_node_protoc` to generate JS stubs + TS definitions
-- [ ] Commit: `feat(clients/js): scaffold package structure`
+  - deps: `@grpc/grpc-js`, `@grpc/proto-loader`
+  - devDeps: `typescript`, `ts-node`, `@types/node`
+  - scripts: `build`, `generate`, `clean`
+- [x] `clients/js/tsconfig.json` — target ES2020, declaration: true, outDir: `dist/`
+- [x] `clients/js/proto/` directory with `filedb.proto` copy + `google/api/` stubs for dynamic loading
+- [x] `clients/js/generate.sh` — script to run `grpc_tools_node_protoc` for static codegen (optional)
+- [x] Commit: `feat(clients/js): scaffold package structure`
 
 ### 2.2 Proto stubs
-- [ ] Run `generate.sh` — produces `filedb_pb.js`, `filedb_pb.d.ts`, `filedb_grpc_pb.js`, `filedb_grpc_pb.d.ts`
-- [ ] Verify import compiles cleanly
-- [ ] Commit: `feat(clients/js): add generated proto stubs`
+- [x] Proto loaded dynamically via `@grpc/proto-loader` at runtime — no pre-generated files needed
+- [x] `clients/js/proto/filedb.proto` + `google/api/{annotations,http}.proto` stubs bundled in package
+- [x] Commit: `feat(clients/js): add proto files for dynamic loading`
 
 ### 2.3 Client class (`src/client.ts`)
-- [ ] `new FileDB(host, port, apiKey, tlsCaCert?)` — builds `grpc.Client` with metadata interceptor for `x-api-key`
-- [ ] Collection management: `createCollection`, `dropCollection`, `listCollections`
-- [ ] CRUD: `insert`, `insertMany`, `findById`, `find` (returns `AsyncIterable<Record>`), `update`, `delete`
-- [ ] Indexes: `ensureIndex`, `dropIndex`, `listIndexes`
-- [ ] Transactions: `beginTx`, `commitTx`, `rollbackTx`
-- [ ] Watch: `watch(collection, filter?) -> AsyncIterable<WatchEvent>`
-- [ ] Stats: `stats(collection)`
-- [ ] Helper: `filterToProto(filter: FilterInput)` — converts plain JS object to proto Filter
-- [ ] TypeScript types: `Record`, `WatchEvent`, `FilterInput`, `FindOptions` exported from `index.ts`
-- [ ] Commit: `feat(clients/js): implement FileDB client class`
+- [x] `new FileDB(host, port, apiKey, tlsCaCert?)` — builds `grpc.Client` with `x-api-key` metadata on every call
+- [x] Collection management: `createCollection`, `dropCollection`, `listCollections`
+- [x] CRUD: `insert`, `insertMany`, `findById`, `find` (returns `AsyncGenerator<DBRecord>`), `findAll`, `update`, `delete`
+- [x] Indexes: `ensureIndex`, `dropIndex`, `listIndexes`
+- [x] Transactions: `beginTx`, `commitTx`, `rollbackTx`
+- [x] Watch: `watch(collection, filter?) -> AsyncGenerator<WatchEvent>`
+- [x] Stats: `stats(collection)`
+- [x] Helper: `filterToProto(filter: FilterInput)` — converts plain JS object to proto Filter
+- [x] TypeScript types: `DBRecord`, `WatchEvent`, `FilterInput`, `FindOptions`, `StatsResult` exported from `index.ts`
+- [x] Commit: `feat(clients/js): implement FileDB client class`
 
 ### 2.4 Build
-- [ ] `npm run build` produces `dist/` with `.js` + `.d.ts` files
-- [ ] Verify `require('filedbv2')` and `import { FileDB } from 'filedbv2'` both work (CJS + ESM)
-- [ ] Commit: `feat(clients/js): build pipeline (CJS + ESM + types)`
+- [x] `npm run build` produces `dist/` with `.js` + `.d.ts` files (CJS + declaration maps)
+- [x] `require('filedbv2')` and `import { FileDB } from 'filedbv2'` both work
+- [x] Commit: `feat(clients/js): build pipeline (CJS + types)`
 
 ### 2.5 Example / test program
-- [ ] `clients/js/examples/test_basic.ts`
+- [x] `clients/js/examples/test_basic.ts`
   - Same flow as Python example (create, insert, find, update, delete, stats, drop)
-- [ ] `clients/js/examples/test_watch.ts` — async watch with background inserts
-- [ ] Commit: `feat(clients/js): add example programs`
+- [x] `clients/js/examples/test_watch.ts` — async watch with background inserts
+- [x] Commit: `feat(clients/js): add example programs`
 
 ### 2.6 Documentation
-- [ ] `clients/js/README.md` — install, connect, usage, filter syntax, TLS
-- [ ] Add JS/TS SDK section to `docs/getting-started.md`
-- [ ] Mark row in PLAN.md + ROADMAP.md
-- [ ] Commit: `docs(clients/js): README and getting-started entry`
+- [x] `clients/js/README.md` — install, connect, usage, filter syntax, TLS
+- [x] Add JS/TS SDK section to `docs/getting-started.md`
+- [x] Mark row in PLAN.md + ROADMAP.md
+- [x] Commit: `docs(clients/js): README and getting-started entry`
 
 ---
 

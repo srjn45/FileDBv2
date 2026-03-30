@@ -18,3 +18,6 @@ data/
 
 # Claude memory (local only)
 .claude/
+
+clients/java/.gradle/
+clients/java/build/

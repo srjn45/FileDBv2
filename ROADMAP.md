@@ -131,7 +131,7 @@ The proto file is ready. Seven language clients are planned — see [`clients/PL
 | Client | Package manager | Status |
 |---|---|---|
 | `clients/python/` | PyPI: `pip install filedbv2` | ⬜ Not started |
-| `clients/js/` | npm: `npm install filedbv2` | ⬜ Not started |
+| `clients/js/` | npm: `npm install filedbv2` | ✅ Done |
 | `clients/php/` | Packagist: `composer require srjn45/filedbv2` | ⬜ Not started |
 | `clients/java/` | Maven Central: `com.srjn45:filedbv2-client` | ✅ Done |
 | `clients/ruby/` | RubyGems: `gem install filedbv2` | ⬜ Not started |
