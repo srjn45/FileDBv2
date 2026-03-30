@@ -156,20 +156,22 @@ Each client needs:
 - gRPC: `EnsureIndex` / `DropIndex` / `ListIndexes` RPCs + REST via grpc-gateway
 - CLI: `ensure-index`, `drop-index`, `indexes` commands
 
-#### 4. TLS support
-Currently gRPC uses `insecure.NewCredentials()`. Add optional TLS via:
-- `--tls-cert` and `--tls-key` flags on the server
-- `--tls-ca` flag on the CLI for client verification
+#### ~~4. TLS support~~ ✅ Done
+Optional TLS on the TCP gRPC listener via `--tls-cert` / `--tls-key` server flags.
+- `credentials.NewTLS()` used for the TCP gRPC server when both flags are set
+- REST gateway dials gRPC with `InsecureSkipVerify` for the internal loopback hop
+- Unix socket server always uses `insecure.NewCredentials()` (local-only transport)
+- CLI `--tls-ca <pem>` builds a `x509.CertPool` and dials with `credentials.NewTLS()`; omit for insecure (or Unix socket auto-detect)
 
-#### 5. Config file (`filedb.yaml`)
-Currently all config comes from CLI flags or env vars. Add YAML config file support via `gopkg.in/yaml.v3` (already in `go.mod`).
+#### ~~5. Config file (`filedb.yaml`)~~ ✅ Done
+`server/config.go` — `LoadConfigFile(path)` reads a YAML config file via `gopkg.in/yaml.v3`, falling back to defaults for omitted fields. `--config` flag on the `serve` command loads it before applying CLI flag overrides (CLI always wins).
 
-#### 6. Metrics / observability
-Add Prometheus metrics endpoint (`/metrics`) for:
-- Records per collection
-- Segment count
-- Compaction frequency and duration
-- Request latency histograms
+#### ~~6. Metrics / observability~~ ✅ Done
+`internal/metrics/metrics.go` — Prometheus instrumentation via `github.com/prometheus/client_golang`.
+- `filedb_collection_records_total` / `filedb_collection_segments_total` — per-collection gauges via a custom `DBCollector` (sampled at scrape time)
+- `filedb_compaction_runs_total` / `filedb_compaction_duration_seconds` — counter + histogram per collection (via `OnCompaction` hook in `CollectionConfig`)
+- `filedb_grpc_request_duration_seconds` — histogram by method + status code (via unary interceptor)
+- Served at `--metrics-addr` (default `:9090`) on `/metrics`; set to empty string to disable
 
 ---
 
