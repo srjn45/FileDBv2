@@ -16,9 +16,14 @@ type Config struct {
 	DataDir string `yaml:"data_dir"` // default: ./data
 
 	// Network
-	GRPCAddr   string `yaml:"grpc_addr"`   // default: :5433
-	RESTAddr   string `yaml:"rest_addr"`   // default: :8080
-	UnixSocket string `yaml:"unix_socket"` // default: /tmp/filedb.sock
+	GRPCAddr    string `yaml:"grpc_addr"`    // default: :5433
+	RESTAddr    string `yaml:"rest_addr"`    // default: :8080
+	UnixSocket  string `yaml:"unix_socket"`  // default: /tmp/filedb.sock
+	MetricsAddr string `yaml:"metrics_addr"` // default: :9090
+
+	// TLS (optional — both cert and key must be set to enable)
+	TLSCert string `yaml:"tls_cert"` // path to PEM certificate file
+	TLSKey  string `yaml:"tls_key"`  // path to PEM private key file
 
 	// Auth
 	APIKey string `yaml:"api_key"` // empty = no auth
@@ -36,6 +41,7 @@ func DefaultConfig() Config {
 		GRPCAddr:        ":5433",
 		RESTAddr:        ":8080",
 		UnixSocket:      "/tmp/filedb.sock",
+		MetricsAddr:     ":9090",
 		SegmentMaxSize:  4 * 1024 * 1024,
 		CompactInterval: 5 * time.Minute,
 		CompactDirtyPct: 0.30,
@@ -58,6 +64,9 @@ type fileConfig struct {
 	GRPCAddr        string  `yaml:"grpc_addr"`
 	RESTAddr        string  `yaml:"rest_addr"`
 	UnixSocket      string  `yaml:"unix_socket"`
+	MetricsAddr     string  `yaml:"metrics_addr"`
+	TLSCert         string  `yaml:"tls_cert"`
+	TLSKey          string  `yaml:"tls_key"`
 	APIKey          string  `yaml:"api_key"`
 	SegmentMaxSize  int64   `yaml:"segment_max_size"`
 	CompactInterval string  `yaml:"compact_interval"`
@@ -80,6 +89,9 @@ func LoadConfigFile(path string) (Config, error) {
 		GRPCAddr:        defaults.GRPCAddr,
 		RESTAddr:        defaults.RESTAddr,
 		UnixSocket:      defaults.UnixSocket,
+		MetricsAddr:     defaults.MetricsAddr,
+		TLSCert:         defaults.TLSCert,
+		TLSKey:          defaults.TLSKey,
 		APIKey:          defaults.APIKey,
 		SegmentMaxSize:  defaults.SegmentMaxSize,
 		CompactInterval: defaults.CompactInterval.String(),
@@ -102,6 +114,9 @@ func LoadConfigFile(path string) (Config, error) {
 		GRPCAddr:        fc.GRPCAddr,
 		RESTAddr:        fc.RESTAddr,
 		UnixSocket:      fc.UnixSocket,
+		MetricsAddr:     fc.MetricsAddr,
+		TLSCert:         fc.TLSCert,
+		TLSKey:          fc.TLSKey,
 		APIKey:          fc.APIKey,
 		SegmentMaxSize:  fc.SegmentMaxSize,
 		CompactInterval: d,
