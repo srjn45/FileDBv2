@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 	"google.golang.org/grpc"
 
 	"github.com/srjn45/filedbv2/internal/auth"
@@ -37,16 +38,50 @@ func rootCmd() *cobra.Command {
 
 func serveCmd() *cobra.Command {
 	cfg := server.DefaultConfig()
+	var configFile string
 
 	cmd := &cobra.Command{
 		Use:   "serve",
 		Short: "Start the FileDB server",
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			// If a config file was given, load it (overrides defaults).
+			// Then re-apply any flags that were explicitly set on the CLI
+			// (CLI always wins over config file).
+			if configFile != "" {
+				fileCfg, err := server.LoadConfigFile(configFile)
+				if err != nil {
+					return err
+				}
+				// Overlay: start from file config, then re-apply explicit flags.
+				merged := fileCfg
+				cmd.Flags().Visit(func(f *pflag.Flag) {
+					switch f.Name {
+					case "data":
+						merged.DataDir = cfg.DataDir
+					case "grpc-addr":
+						merged.GRPCAddr = cfg.GRPCAddr
+					case "rest-addr":
+						merged.RESTAddr = cfg.RESTAddr
+					case "socket":
+						merged.UnixSocket = cfg.UnixSocket
+					case "api-key":
+						merged.APIKey = cfg.APIKey
+					case "segment-size":
+						merged.SegmentMaxSize = cfg.SegmentMaxSize
+					case "compact-interval":
+						merged.CompactInterval = cfg.CompactInterval
+					case "compact-dirty":
+						merged.CompactDirtyPct = cfg.CompactDirtyPct
+					}
+				})
+				cfg = merged
+			}
 			return serve(cfg)
 		},
 	}
 
 	f := cmd.Flags()
+	f.StringVar(&configFile, "config", "", "Path to YAML config file (filedb.yaml)")
 	f.StringVar(&cfg.DataDir, "data", cfg.DataDir, "Data directory")
 	f.StringVar(&cfg.GRPCAddr, "grpc-addr", cfg.GRPCAddr, "gRPC listen address")
 	f.StringVar(&cfg.RESTAddr, "rest-addr", cfg.RESTAddr, "REST listen address")

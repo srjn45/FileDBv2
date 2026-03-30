@@ -1,29 +1,32 @@
 package server
 
 import (
+	"fmt"
+	"os"
 	"time"
 
 	"github.com/srjn45/filedbv2/internal/engine"
+	"gopkg.in/yaml.v3"
 )
 
 // Config holds all server configuration, loaded from CLI flags → env vars →
 // config file, in priority order.
 type Config struct {
 	// Storage
-	DataDir string // default: ./data
+	DataDir string `yaml:"data_dir"` // default: ./data
 
 	// Network
-	GRPCAddr   string // default: :5433
-	RESTAddr   string // default: :8080
-	UnixSocket string // default: /tmp/filedb.sock
+	GRPCAddr   string `yaml:"grpc_addr"`   // default: :5433
+	RESTAddr   string `yaml:"rest_addr"`   // default: :8080
+	UnixSocket string `yaml:"unix_socket"` // default: /tmp/filedb.sock
 
 	// Auth
-	APIKey string // empty = no auth
+	APIKey string `yaml:"api_key"` // empty = no auth
 
 	// Engine tuning
-	SegmentMaxSize  int64         // default: 4 MiB
-	CompactInterval time.Duration // default: 5m
-	CompactDirtyPct float64       // default: 0.30
+	SegmentMaxSize  int64         `yaml:"segment_max_size"`  // default: 4 MiB
+	CompactInterval time.Duration `yaml:"compact_interval"`  // default: 5m
+	CompactDirtyPct float64       `yaml:"compact_dirty_pct"` // default: 0.30
 }
 
 // DefaultConfig returns a Config with sensible defaults.
@@ -46,4 +49,62 @@ func (c Config) EngineConfig() engine.CollectionConfig {
 		CompactInterval: c.CompactInterval,
 		CompactDirtyPct: c.CompactDirtyPct,
 	}
+}
+
+// fileConfig mirrors Config but uses a string for CompactInterval so yaml.v3
+// can unmarshal human-readable durations like "5m" or "1h30m".
+type fileConfig struct {
+	DataDir         string  `yaml:"data_dir"`
+	GRPCAddr        string  `yaml:"grpc_addr"`
+	RESTAddr        string  `yaml:"rest_addr"`
+	UnixSocket      string  `yaml:"unix_socket"`
+	APIKey          string  `yaml:"api_key"`
+	SegmentMaxSize  int64   `yaml:"segment_max_size"`
+	CompactInterval string  `yaml:"compact_interval"`
+	CompactDirtyPct float64 `yaml:"compact_dirty_pct"`
+}
+
+// LoadConfigFile reads a YAML config file and returns a Config populated with
+// its values, falling back to DefaultConfig() for any omitted fields.
+func LoadConfigFile(path string) (Config, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return Config{}, fmt.Errorf("open config file: %w", err)
+	}
+	defer f.Close()
+
+	// Start from defaults so omitted keys keep their default value.
+	defaults := DefaultConfig()
+	fc := fileConfig{
+		DataDir:         defaults.DataDir,
+		GRPCAddr:        defaults.GRPCAddr,
+		RESTAddr:        defaults.RESTAddr,
+		UnixSocket:      defaults.UnixSocket,
+		APIKey:          defaults.APIKey,
+		SegmentMaxSize:  defaults.SegmentMaxSize,
+		CompactInterval: defaults.CompactInterval.String(),
+		CompactDirtyPct: defaults.CompactDirtyPct,
+	}
+
+	dec := yaml.NewDecoder(f)
+	dec.KnownFields(true)
+	if err := dec.Decode(&fc); err != nil {
+		return Config{}, fmt.Errorf("parse config file: %w", err)
+	}
+
+	d, err := time.ParseDuration(fc.CompactInterval)
+	if err != nil {
+		return Config{}, fmt.Errorf("config file compact_interval %q: %w", fc.CompactInterval, err)
+	}
+
+	return Config{
+		DataDir:         fc.DataDir,
+		GRPCAddr:        fc.GRPCAddr,
+		RESTAddr:        fc.RESTAddr,
+		UnixSocket:      fc.UnixSocket,
+		APIKey:          fc.APIKey,
+		SegmentMaxSize:  fc.SegmentMaxSize,
+		CompactInterval: d,
+		CompactDirtyPct: fc.CompactDirtyPct,
+	}, nil
 }
