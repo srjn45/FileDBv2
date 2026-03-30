@@ -36,7 +36,7 @@ data/
     ├── seg_000002.ndjson           ← sealed
     ├── seg_000003.ndjson           ← active (current append target)
     ├── index.json                  ← id → {segment, byte_offset} + SHA-256 checksum
-    └── meta.json                   ← id counter, created_at  [NOT YET IMPLEMENTED]
+    └── meta.json                   ← id counter, created_at
 
 Each line in a segment:
 {"id":1,"op":"insert","ts":"2026-03-29T10:00:00Z","data":{"name":"alice"}}
@@ -69,7 +69,7 @@ CreateCollection  DropCollection  ListCollections
 Insert  InsertMany  FindById  Find (streaming)  Update  Delete
 Watch (server-streaming change feed)
 CollectionStats
-BeginTx  CommitTx  RollbackTx  ← STUBBED (Unimplemented)
+BeginTx  CommitTx  RollbackTx
 ```
 
 ### Phase 3 — Storage Engine
@@ -109,8 +109,12 @@ BeginTx  CommitTx  RollbackTx  ← STUBBED (Unimplemented)
 - [x] `internal/store/ndjson_test.go` — encode/decode parity, delete entry
 - [x] `internal/engine/segment_test.go` — append + readAt, scanAll, crash recovery, seal
 - [x] `internal/engine/collection_test.go` — insert/findById, update, delete, scan, persist across reopen, concurrent writes (race detector), watcher
+- [x] `internal/engine/index_test.go` — Set/Get/Delete, Len, Persist+Load, checksum mismatch, Rebuild from segments
+- [x] `internal/engine/compactor_test.go` — isDirty threshold, compact reduces segments, records readable after compact, rebalancer merges tiny segments
+- [x] `internal/query/filter_test.go` — all 8 ops, And/Or/nested, MatchAll, missing field, invalid regex
+- [x] `server/grpc_integration_test.go` — in-process gRPC server, CRUD, Find with filter/order/limit, transactions, error paths
 
-**All 17 tests pass with `go test ./... -race`**
+**All 40+ tests pass with `go test ./... -race`**
 
 ---
 
@@ -118,27 +122,7 @@ BeginTx  CommitTx  RollbackTx  ← STUBBED (Unimplemented)
 
 ### High Priority
 
-#### 1. `meta.json` per collection
-Currently the id counter is reconstructed at startup by scanning all segment entries for the highest id seen. For large collections this adds startup latency.
-
-**What to build:**
-- Write `meta.json` to `{collection_dir}/meta.json` on every id increment (or batch-write every N inserts)
-- On startup, load `meta.json` first; only fall back to full scan if file is missing
-- Schema: `{"id_counter": 5, "created_at": "2026-03-29T10:00:00Z"}`
-- File: `internal/engine/meta.go`
-
-#### 2. Transactions
-Currently `BeginTx`, `CommitTx`, `RollbackTx` return `codes.Unimplemented`.
-
-**Design:**
-- A transaction is a write buffer (in-memory slice of pending entries) associated with a `tx_id` (UUID)
-- `CommitTx` flushes the buffer to the active segment under a single write lock (atomic from the perspective of readers)
-- `RollbackTx` discards the buffer
-- Transactions are per-collection only (no cross-collection transactions)
-- Store pending transactions in `Collection.txMu sync.Mutex` + `map[string][]store.Entry`
-- File: extend `internal/engine/collection.go` + `server/grpc.go`
-
-#### 3. Language clients
+#### 1. Language clients
 The proto file is ready. All three clients just need `protoc`/`buf` generation + thin wrappers.
 
 | Client | Package manager | Status |
@@ -153,52 +137,27 @@ Each client needs:
 3. Handle connection setup (host, API key, Unix socket for Python/Node local use)
 4. Write a README + publish to the package registry
 
-#### 4. `order_by` in Find
-The `FindRequest.order_by` and `FindRequest.descending` fields are defined in the proto but not implemented in `server/grpc.go`. Currently results are returned in scan order (segment order, not sorted).
-
-**What to build:** after collecting `[]ScanResult`, sort by the specified field using reflection on `Data map[string]any`.
-
 ### Medium Priority
 
-#### 5. Index tests
-`internal/engine/index.go` has no dedicated test file. Should test:
-- Set/Get/Delete
-- Persist + Load with valid checksum
-- Load with corrupted checksum → `ErrIndexStale`
-- Rebuild from segments
-
-#### 6. Compactor tests
-`internal/engine/compactor.go` has no dedicated test file. Should test:
-- `isDirty` returns false below threshold, true above
-- `compact()` reduces segment count
-- Records still readable after compaction
-- Rebalancer merges tiny segments
-
-#### 7. Query filter tests
-`internal/query/filter.go` has no test file. Should test all ops (eq/neq/gt/gte/lt/lte/contains/regex) against various types (string, float64, int).
-
-#### 8. Server integration tests
-No tests for `server/grpc.go`. Should spin up an in-process gRPC server + engine and run end-to-end CRUD operations.
-
-#### 9. `golangci-lint` configuration
-Add `.golangci.yml` to configure linter rules (enable `staticcheck`, `errcheck`, `govet`, `unused`).
+#### 2. `golangci-lint` — stricter rules
+`.golangci.yml` exists with `bodyclose`, `errorlint`, `copyloopvar`. Consider adding `staticcheck`, `govet`, `unused` once pb-generated code exclusions are tuned.
 
 ### Low Priority / Future
 
-#### 10. Secondary indexes
+#### 3. Secondary indexes
 Currently only `FindById` uses the index. `Find` does a full segment scan. A secondary index on a user-specified field would make filtered queries O(log n) instead of O(n).
 
 **Design consideration:** secondary indexes need to be updated on every insert/update/delete AND rebuilt during compaction. Adds complexity — implement after transactions are solid.
 
-#### 11. TLS support
+#### 4. TLS support
 Currently gRPC uses `insecure.NewCredentials()`. Add optional TLS via:
 - `--tls-cert` and `--tls-key` flags on the server
 - `--tls-ca` flag on the CLI for client verification
 
-#### 12. Config file (`filedb.yaml`)
+#### 5. Config file (`filedb.yaml`)
 Currently all config comes from CLI flags or env vars. Add YAML config file support via `gopkg.in/yaml.v3` (already in `go.mod`).
 
-#### 13. Metrics / observability
+#### 6. Metrics / observability
 Add Prometheus metrics endpoint (`/metrics`) for:
 - Records per collection
 - Segment count
@@ -243,7 +202,7 @@ make cli          # connects to local socket automatically
 ```
 
 Next logical steps in order:
-1. `meta.json` — eliminates slow startup on large collections
-2. Transactions — completes the API surface
-3. Index/compactor/filter tests — brings test coverage to a reasonable level
-4. Language clients — unlocks the "use from any language" goal
+1. Language clients — unlocks the "use from any language" goal (Python, PHP, JS)
+2. Secondary indexes — makes filtered queries O(log n) instead of O(n)
+3. TLS support — hardens network transport
+4. Metrics endpoint — adds Prometheus observability
