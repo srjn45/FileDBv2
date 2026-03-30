@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"net"
 	"os"
 
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 
@@ -18,6 +21,7 @@ type cliFlags struct {
 	host   string
 	socket string
 	apiKey string
+	tlsCA  string // path to PEM CA cert; empty = no TLS on TCP
 }
 
 func main() {
@@ -38,6 +42,7 @@ func rootCmd() *cobra.Command {
 	pf.StringVar(&flags.host, "host", "localhost:5433", "FileDB gRPC address")
 	pf.StringVar(&flags.socket, "socket", "/tmp/filedb.sock", "Unix socket path (used if socket file exists)")
 	pf.StringVar(&flags.apiKey, "api-key", os.Getenv("FILEDB_API_KEY"), "API key (env: FILEDB_API_KEY)")
+	pf.StringVar(&flags.tlsCA, "tls-ca", "", "Path to CA certificate PEM for TLS server verification (enables TLS on TCP)")
 
 	root.AddCommand(
 		replCmd(flags),
@@ -70,18 +75,32 @@ func connect(flags *cliFlags) (*grpc.ClientConn, pb.FileDBClient, func(), error)
 		err  error
 	)
 
-	opts := []grpc.DialOption{
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-	}
-
-	// Prefer Unix socket if the file exists.
+	// Prefer Unix socket if the file exists (always insecure — local transport).
 	if _, statErr := os.Stat(flags.socket); statErr == nil {
-		opts = append(opts, grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
-			return (&net.Dialer{}).DialContext(ctx, "unix", flags.socket)
-		}))
+		opts := []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, "unix", flags.socket)
+			}),
+		}
 		conn, err = grpc.NewClient("unix://"+flags.socket, opts...)
 	} else {
-		conn, err = grpc.NewClient(flags.host, opts...)
+		// TCP: use TLS when --tls-ca is provided, otherwise insecure.
+		var tcpCreds credentials.TransportCredentials
+		if flags.tlsCA != "" {
+			pem, readErr := os.ReadFile(flags.tlsCA)
+			if readErr != nil {
+				return nil, nil, nil, fmt.Errorf("read CA cert %q: %w", flags.tlsCA, readErr)
+			}
+			pool := x509.NewCertPool()
+			if !pool.AppendCertsFromPEM(pem) {
+				return nil, nil, nil, fmt.Errorf("no valid certificates found in %q", flags.tlsCA)
+			}
+			tcpCreds = credentials.NewTLS(&tls.Config{RootCAs: pool})
+		} else {
+			tcpCreds = insecure.NewCredentials()
+		}
+		conn, err = grpc.NewClient(flags.host, grpc.WithTransportCredentials(tcpCreds))
 	}
 
 	if err != nil {
