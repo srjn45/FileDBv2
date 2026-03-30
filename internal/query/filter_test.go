@@ -1,0 +1,203 @@
+package query_test
+
+import (
+	"testing"
+
+	"github.com/srjn45/filedbv2/internal/query"
+)
+
+// record is a helper to build a data map concisely.
+func record(pairs ...any) map[string]any {
+	m := make(map[string]any, len(pairs)/2)
+	for i := 0; i < len(pairs)-1; i += 2 {
+		m[pairs[i].(string)] = pairs[i+1]
+	}
+	return m
+}
+
+// ---- FieldFilter ------------------------------------------------------------
+
+func TestFieldFilter_Eq(t *testing.T) {
+	f := &query.FieldFilter{Field: "role", Op: query.OpEq, Value: `"admin"`}
+	if !f.Match(record("role", "admin")) {
+		t.Error("expected match for equal string")
+	}
+	if f.Match(record("role", "user")) {
+		t.Error("expected no match for different string")
+	}
+}
+
+func TestFieldFilter_Eq_Numeric(t *testing.T) {
+	f := &query.FieldFilter{Field: "age", Op: query.OpEq, Value: "30"}
+	if !f.Match(record("age", float64(30))) {
+		t.Error("expected match for equal number")
+	}
+	if f.Match(record("age", float64(31))) {
+		t.Error("expected no match for different number")
+	}
+}
+
+func TestFieldFilter_Neq(t *testing.T) {
+	f := &query.FieldFilter{Field: "role", Op: query.OpNeq, Value: `"admin"`}
+	if !f.Match(record("role", "user")) {
+		t.Error("expected match for neq")
+	}
+	if f.Match(record("role", "admin")) {
+		t.Error("expected no match when equal")
+	}
+}
+
+func TestFieldFilter_Gt(t *testing.T) {
+	f := &query.FieldFilter{Field: "age", Op: query.OpGt, Value: "25"}
+	if !f.Match(record("age", float64(30))) {
+		t.Error("expected match for 30 > 25")
+	}
+	if f.Match(record("age", float64(25))) {
+		t.Error("expected no match for 25 > 25")
+	}
+	if f.Match(record("age", float64(20))) {
+		t.Error("expected no match for 20 > 25")
+	}
+}
+
+func TestFieldFilter_Gte(t *testing.T) {
+	f := &query.FieldFilter{Field: "age", Op: query.OpGte, Value: "25"}
+	if !f.Match(record("age", float64(25))) {
+		t.Error("expected match for 25 >= 25")
+	}
+	if !f.Match(record("age", float64(26))) {
+		t.Error("expected match for 26 >= 25")
+	}
+	if f.Match(record("age", float64(24))) {
+		t.Error("expected no match for 24 >= 25")
+	}
+}
+
+func TestFieldFilter_Lt(t *testing.T) {
+	f := &query.FieldFilter{Field: "age", Op: query.OpLt, Value: "25"}
+	if !f.Match(record("age", float64(20))) {
+		t.Error("expected match for 20 < 25")
+	}
+	if f.Match(record("age", float64(25))) {
+		t.Error("expected no match for 25 < 25")
+	}
+}
+
+func TestFieldFilter_Lte(t *testing.T) {
+	f := &query.FieldFilter{Field: "age", Op: query.OpLte, Value: "25"}
+	if !f.Match(record("age", float64(25))) {
+		t.Error("expected match for 25 <= 25")
+	}
+	if f.Match(record("age", float64(26))) {
+		t.Error("expected no match for 26 <= 25")
+	}
+}
+
+func TestFieldFilter_Contains(t *testing.T) {
+	f := &query.FieldFilter{Field: "email", Op: query.OpContains, Value: `"@example"`}
+	if !f.Match(record("email", "alice@example.com")) {
+		t.Error("expected match for contains")
+	}
+	if f.Match(record("email", "alice@other.com")) {
+		t.Error("expected no match when not contained")
+	}
+}
+
+func TestFieldFilter_Regex(t *testing.T) {
+	f := &query.FieldFilter{Field: "name", Op: query.OpRegex, Value: `"^Al"`}
+	if !f.Match(record("name", "Alice")) {
+		t.Error("expected match for regex ^Al")
+	}
+	if f.Match(record("name", "Bob")) {
+		t.Error("expected no match for Bob against ^Al")
+	}
+}
+
+func TestFieldFilter_Regex_Invalid(t *testing.T) {
+	// Invalid regex should not panic — just returns false.
+	f := &query.FieldFilter{Field: "name", Op: query.OpRegex, Value: `"[invalid"`}
+	if f.Match(record("name", "Alice")) {
+		t.Error("expected false for invalid regex")
+	}
+}
+
+func TestFieldFilter_MissingField(t *testing.T) {
+	f := &query.FieldFilter{Field: "missing", Op: query.OpEq, Value: `"x"`}
+	if f.Match(record("name", "Alice")) {
+		t.Error("expected no match when field absent")
+	}
+}
+
+// ---- AndFilter / OrFilter ---------------------------------------------------
+
+func TestAndFilter_AllMatch(t *testing.T) {
+	f := &query.AndFilter{Filters: []query.Filter{
+		&query.FieldFilter{Field: "role", Op: query.OpEq, Value: `"admin"`},
+		&query.FieldFilter{Field: "age", Op: query.OpGt, Value: "20"},
+	}}
+	if !f.Match(record("role", "admin", "age", float64(30))) {
+		t.Error("expected match when all sub-filters match")
+	}
+}
+
+func TestAndFilter_OneFails(t *testing.T) {
+	f := &query.AndFilter{Filters: []query.Filter{
+		&query.FieldFilter{Field: "role", Op: query.OpEq, Value: `"admin"`},
+		&query.FieldFilter{Field: "age", Op: query.OpGt, Value: "50"},
+	}}
+	if f.Match(record("role", "admin", "age", float64(30))) {
+		t.Error("expected no match when one sub-filter fails")
+	}
+}
+
+func TestOrFilter_OneMatches(t *testing.T) {
+	f := &query.OrFilter{Filters: []query.Filter{
+		&query.FieldFilter{Field: "role", Op: query.OpEq, Value: `"admin"`},
+		&query.FieldFilter{Field: "role", Op: query.OpEq, Value: `"superuser"`},
+	}}
+	if !f.Match(record("role", "admin")) {
+		t.Error("expected match when one sub-filter matches")
+	}
+}
+
+func TestOrFilter_NoneMatch(t *testing.T) {
+	f := &query.OrFilter{Filters: []query.Filter{
+		&query.FieldFilter{Field: "role", Op: query.OpEq, Value: `"admin"`},
+		&query.FieldFilter{Field: "role", Op: query.OpEq, Value: `"superuser"`},
+	}}
+	if f.Match(record("role", "user")) {
+		t.Error("expected no match when no sub-filter matches")
+	}
+}
+
+func TestMatchAll(t *testing.T) {
+	if !query.MatchAll.Match(record()) {
+		t.Error("MatchAll should match empty record")
+	}
+	if !query.MatchAll.Match(record("x", "y")) {
+		t.Error("MatchAll should match any record")
+	}
+}
+
+// ---- Nested (And inside Or) -------------------------------------------------
+
+func TestNestedFilter(t *testing.T) {
+	// (role=admin AND age>25) OR (role=superuser)
+	f := &query.OrFilter{Filters: []query.Filter{
+		&query.AndFilter{Filters: []query.Filter{
+			&query.FieldFilter{Field: "role", Op: query.OpEq, Value: `"admin"`},
+			&query.FieldFilter{Field: "age", Op: query.OpGt, Value: "25"},
+		}},
+		&query.FieldFilter{Field: "role", Op: query.OpEq, Value: `"superuser"`},
+	}}
+
+	if !f.Match(record("role", "admin", "age", float64(30))) {
+		t.Error("expected match: admin age 30")
+	}
+	if f.Match(record("role", "admin", "age", float64(20))) {
+		t.Error("expected no match: admin age 20 (fails age>25)")
+	}
+	if !f.Match(record("role", "superuser", "age", float64(10))) {
+		t.Error("expected match: superuser regardless of age")
+	}
+}
