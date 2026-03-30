@@ -2266,7 +2266,7 @@ const file_proto_filedb_proto_rawDesc = "" +
 	"\x14WATCH_OP_UNSPECIFIED\x10\x00\x12\f\n" +
 	"\bINSERTED\x10\x01\x12\v\n" +
 	"\aUPDATED\x10\x02\x12\v\n" +
-	"\aDELETED\x10\x032\xbd\r\n" +
+	"\aDELETED\x10\x032\xe0\r\n" +
 	"\x06FileDB\x12w\n" +
 	"\x10CreateCollection\x12\".filedb.v1.CreateCollectionRequest\x1a#.filedb.v1.CreateCollectionResponse\"\x1a\x82\xd3\xe4\x93\x02\x14:\x01*\"\x0f/v1/collections\x12u\n" +
 	"\x0eDropCollection\x12 .filedb.v1.DropCollectionRequest\x1a!.filedb.v1.DropCollectionResponse\"\x1e\x82\xd3\xe4\x93\x02\x18*\x16/v1/collections/{name}\x12q\n" +
@@ -2284,8 +2284,8 @@ const file_proto_filedb_proto_rawDesc = "" +
 	"\aBeginTx\x12\x19.filedb.v1.BeginTxRequest\x1a\x1a.filedb.v1.BeginTxResponse\x12C\n" +
 	"\bCommitTx\x12\x1a.filedb.v1.CommitTxRequest\x1a\x1b.filedb.v1.CommitTxResponse\x12I\n" +
 	"\n" +
-	"RollbackTx\x12\x1c.filedb.v1.RollbackTxRequest\x1a\x1d.filedb.v1.RollbackTxResponse\x129\n" +
-	"\x05Watch\x12\x17.filedb.v1.WatchRequest\x1a\x15.filedb.v1.WatchEvent0\x01\x12x\n" +
+	"RollbackTx\x12\x1c.filedb.v1.RollbackTxRequest\x1a\x1d.filedb.v1.RollbackTxResponse\x12\\\n" +
+	"\x05Watch\x12\x17.filedb.v1.WatchRequest\x1a\x15.filedb.v1.WatchEvent\"!\x82\xd3\xe4\x93\x02\x1b:\x01*\"\x16/v1/{collection}/watch0\x01\x12x\n" +
 	"\x0fCollectionStats\x12!.filedb.v1.CollectionStatsRequest\x1a\".filedb.v1.CollectionStatsResponse\"\x1e\x82\xd3\xe4\x93\x02\x18\x12\x16/v1/{collection}/statsB.Z,github.com/srjn45/filedbv2/internal/pb/protob\x06proto3"
 
 var (

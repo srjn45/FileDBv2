@@ -21,6 +21,21 @@ func headerMatcher(key string) (string, bool) {
 	return runtime.DefaultHeaderMatcher(key)
 }
 
+// corsMiddleware adds permissive CORS headers so browser clients (e.g. the
+// web UI dev server at :5173) can call the REST gateway at :8080.
+func corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, x-api-key")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // NewRESTGateway returns an http.Handler that proxies requests to the gRPC
 // server listening on grpcAddr via the grpc-gateway.
 // creds controls how the gateway dials gRPC (pass insecure.NewCredentials() when TLS is off).
@@ -31,7 +46,7 @@ func NewRESTGateway(ctx context.Context, grpcAddr string, creds credentials.Tran
 	if err := pb.RegisterFileDBHandlerFromEndpoint(ctx, mux, grpcAddr, opts); err != nil {
 		return nil, err
 	}
-	return mux, nil
+	return corsMiddleware(watchInterceptor(mux, newTCPWatchDial(grpcAddr, creds))), nil
 }
 
 // NewRESTGatewayUnix returns an http.Handler that dials the gRPC server via a
@@ -48,5 +63,5 @@ func NewRESTGatewayUnix(ctx context.Context, socketPath string) (http.Handler, e
 	if err := pb.RegisterFileDBHandlerFromEndpoint(ctx, mux, "unix://"+socketPath, opts); err != nil {
 		return nil, err
 	}
-	return mux, nil
+	return corsMiddleware(watchInterceptor(mux, newUnixWatchDial(socketPath))), nil
 }

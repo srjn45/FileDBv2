@@ -106,7 +106,12 @@ service FileDB {
 
   // --- Watch (server-streaming change feed) ---
 
-  rpc Watch(WatchRequest) returns (stream WatchEvent);
+  rpc Watch(WatchRequest) returns (stream WatchEvent) {
+    option (google.api.http) = {
+      post: "/v1/{collection}/watch"
+      body: "*"
+    };
+  }
 
   // --- Stats ---
 
