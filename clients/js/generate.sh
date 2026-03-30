@@ -9,6 +9,7 @@
 set -euo pipefail
 
 PROTO_SRC="$(cd "$(dirname "$0")/../../proto" && pwd)"
+DEPS_DIR="$(cd "$(dirname "$0")/proto" && pwd)"
 OUT_DIR="$(cd "$(dirname "$0")/src/proto" && pwd)"
 PLUGIN="$(cd "$(dirname "$0")/node_modules/.bin" && pwd)/grpc_tools_node_protoc_plugin"
 TS_PLUGIN="$(cd "$(dirname "$0")/node_modules/.bin" && pwd)/protoc-gen-ts"
@@ -22,7 +23,7 @@ npx grpc_tools_node_protoc \
   --ts_out=grpc_js:"$OUT_DIR" \
   --plugin=protoc-gen-ts="$TS_PLUGIN" \
   -I "$PROTO_SRC" \
-  -I "$(dirname "$0")/proto" \
+  -I "$DEPS_DIR" \
   "$PROTO_SRC/filedb.proto"
 
 echo "Done. Stubs written to $OUT_DIR"
