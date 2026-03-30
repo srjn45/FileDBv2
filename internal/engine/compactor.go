@@ -52,18 +52,38 @@ func (c *Collection) compact() error {
 		return fmt.Errorf("compactor: resolve: %w", err)
 	}
 
-	// --- Step 4: Write resolved entries into new temp segment files ---
-	newSegs, err := c.writeCompacted(resolved)
+	// --- Step 4: Write resolved entries into temp segment files (not yet renamed) ---
+	tempSegs, err := c.writeCompacted(resolved)
 	if err != nil {
 		return fmt.Errorf("compactor: write compacted: %w", err)
 	}
+	// Nothing survived (all deletes) — still need to swap under lock.
+
 
 	// --- Step 5: Acquire write lock, swap segments, rebuild index ---
 	c.mu.Lock()
 
-	// Remove old sealed segments from disk.
+	// Remove old sealed segments from disk, then rename temp files into their
+	// permanent positions. Doing both under the lock avoids the race where the
+	// rename (step 4) overwrites an original file that the removal (step 5)
+	// then deletes, destroying the freshly-compacted data.
 	for _, s := range toCompact {
 		_ = os.Remove(s.Path())
+	}
+
+	var newSegs []*Segment
+	for i, seg := range tempSegs {
+		finalPath := c.segmentPath(uint64(i + 1))
+		if err := os.Rename(seg.Path(), finalPath); err != nil {
+			c.mu.Unlock()
+			return fmt.Errorf("compactor: rename %q → %q: %w", seg.Path(), finalPath, err)
+		}
+		info, _ := os.Stat(finalPath)
+		size := int64(0)
+		if info != nil {
+			size = info.Size()
+		}
+		newSegs = append(newSegs, openSealedSegment(finalPath, size))
 	}
 
 	c.sealed = newSegs
@@ -197,21 +217,8 @@ func (c *Collection) writeCompacted(entries []store.Entry) ([]*Segment, error) {
 		return nil, err
 	}
 
-	// Rename temp files to permanent names.
-	var finalSegs []*Segment
-	for i, seg := range segs {
-		finalPath := c.segmentPath(uint64(i + 1))
-		if err := os.Rename(seg.Path(), finalPath); err != nil {
-			return nil, fmt.Errorf("compactor: rename %q → %q: %w", seg.Path(), finalPath, err)
-		}
-		info, _ := os.Stat(finalPath)
-		size := int64(0)
-		if info != nil {
-			size = info.Size()
-		}
-		finalSegs = append(finalSegs, openSealedSegment(finalPath, size))
-	}
-	return finalSegs, nil
+	// Return temp-named segments; caller renames them inside the write lock.
+	return segs, nil
 }
 
 // rebalance merges adjacent segments whose combined size fits within maxSize
