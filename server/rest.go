@@ -9,6 +9,7 @@ import (
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	pb "github.com/srjn45/filedbv2/internal/pb/proto"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
@@ -22,9 +23,10 @@ func headerMatcher(key string) (string, bool) {
 
 // NewRESTGateway returns an http.Handler that proxies requests to the gRPC
 // server listening on grpcAddr via the grpc-gateway.
-func NewRESTGateway(ctx context.Context, grpcAddr string) (http.Handler, error) {
+// creds controls how the gateway dials gRPC (pass insecure.NewCredentials() when TLS is off).
+func NewRESTGateway(ctx context.Context, grpcAddr string, creds credentials.TransportCredentials) (http.Handler, error) {
 	mux := runtime.NewServeMux(runtime.WithIncomingHeaderMatcher(headerMatcher))
-	opts := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
+	opts := []grpc.DialOption{grpc.WithTransportCredentials(creds)}
 
 	if err := pb.RegisterFileDBHandlerFromEndpoint(ctx, mux, grpcAddr, opts); err != nil {
 		return nil, err
@@ -33,7 +35,8 @@ func NewRESTGateway(ctx context.Context, grpcAddr string) (http.Handler, error) 
 }
 
 // NewRESTGatewayUnix returns an http.Handler that dials the gRPC server via a
-// Unix domain socket.
+// Unix domain socket. Unix sockets are always local, so insecure credentials
+// are used regardless of the server's TLS setting.
 func NewRESTGatewayUnix(ctx context.Context, socketPath string) (http.Handler, error) {
 	mux := runtime.NewServeMux(runtime.WithIncomingHeaderMatcher(headerMatcher))
 	opts := []grpc.DialOption{

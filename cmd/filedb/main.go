@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"log"
 	"net"
@@ -11,12 +12,18 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/credentials/insecure"
+	grpcstatus "google.golang.org/grpc/status"
 
 	"github.com/srjn45/filedbv2/internal/auth"
 	"github.com/srjn45/filedbv2/internal/engine"
+	"github.com/srjn45/filedbv2/internal/metrics"
 	pb "github.com/srjn45/filedbv2/internal/pb/proto"
 	"github.com/srjn45/filedbv2/server"
 )
@@ -72,6 +79,12 @@ func serveCmd() *cobra.Command {
 						merged.CompactInterval = cfg.CompactInterval
 					case "compact-dirty":
 						merged.CompactDirtyPct = cfg.CompactDirtyPct
+					case "metrics-addr":
+						merged.MetricsAddr = cfg.MetricsAddr
+					case "tls-cert":
+						merged.TLSCert = cfg.TLSCert
+					case "tls-key":
+						merged.TLSKey = cfg.TLSKey
 					}
 				})
 				cfg = merged
@@ -90,24 +103,87 @@ func serveCmd() *cobra.Command {
 	f.Int64Var(&cfg.SegmentMaxSize, "segment-size", cfg.SegmentMaxSize, "Max segment file size in bytes")
 	f.DurationVar(&cfg.CompactInterval, "compact-interval", cfg.CompactInterval, "Compaction interval")
 	f.Float64Var(&cfg.CompactDirtyPct, "compact-dirty", cfg.CompactDirtyPct, "Dirty ratio threshold to trigger compaction (0–1)")
+	f.StringVar(&cfg.MetricsAddr, "metrics-addr", cfg.MetricsAddr, "Prometheus metrics listen address (empty = disabled)")
+	f.StringVar(&cfg.TLSCert, "tls-cert", cfg.TLSCert, "Path to TLS certificate PEM file (enables TLS when set with --tls-key)")
+	f.StringVar(&cfg.TLSKey, "tls-key", cfg.TLSKey, "Path to TLS private key PEM file (enables TLS when set with --tls-cert)")
 
 	return cmd
 }
 
 func serve(cfg server.Config) error {
-	// Open the database.
-	db, err := engine.Open(cfg.DataDir, cfg.EngineConfig())
+	// Set up Prometheus metrics.
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(prometheus.NewGoCollector(), prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}))
+	m := metrics.New(reg)
+
+	// Open the database, attaching the compaction hook.
+	engineCfg := cfg.EngineConfig()
+	engineCfg.OnCompaction = m.ObserveCompaction
+
+	db, err := engine.Open(cfg.DataDir, engineCfg)
 	if err != nil {
 		return fmt.Errorf("open db: %w", err)
 	}
 	defer func() { _ = db.Close() }()
 	log.Printf("filedb: data dir=%q", cfg.DataDir)
 
-	// Build gRPC server with auth interceptors.
+	// Register the per-collection gauge collector.
+	metrics.NewDBCollector(reg, func() []metrics.CollectionStats {
+		names := db.ListCollections()
+		stats := make([]metrics.CollectionStats, 0, len(names))
+		for _, name := range names {
+			col, err := db.Collection(name)
+			if err != nil {
+				continue
+			}
+			s := col.Stats()
+			stats = append(stats, metrics.CollectionStats{
+				Name:         s.Name,
+				RecordCount:  s.RecordCount,
+				SegmentCount: s.SegmentCount,
+			})
+		}
+		return stats
+	})
+
+	// Start the metrics HTTP server (if configured).
+	if cfg.MetricsAddr != "" {
+		metricsMux := http.NewServeMux()
+		metricsMux.Handle("/metrics", metrics.Handler(reg))
+		metricsSrv := &http.Server{Addr: cfg.MetricsAddr, Handler: metricsMux}
+		go func() {
+			log.Printf("filedb: metrics listening on %s/metrics", cfg.MetricsAddr)
+			if err := metricsSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Printf("filedb: metrics server error: %v", err)
+			}
+		}()
+	}
+
+	// Build TLS credentials (optional).
+	var serverCreds credentials.TransportCredentials
+	var restDialCreds credentials.TransportCredentials
+	if cfg.TLSCert != "" && cfg.TLSKey != "" {
+		cert, err := tls.LoadX509KeyPair(cfg.TLSCert, cfg.TLSKey)
+		if err != nil {
+			return fmt.Errorf("load TLS key pair: %w", err)
+		}
+		serverCreds = credentials.NewTLS(&tls.Config{Certificates: []tls.Certificate{cert}})
+		// The REST gateway dials gRPC on loopback; skip verification for this
+		// internal hop since the cert may be self-signed.
+		restDialCreds = credentials.NewTLS(&tls.Config{InsecureSkipVerify: true}) //nolint:gosec
+		log.Printf("filedb: TLS enabled (cert=%s)", cfg.TLSCert)
+	} else {
+		serverCreds = insecure.NewCredentials()
+		restDialCreds = insecure.NewCredentials()
+	}
+
+	// TCP gRPC server — uses configurable TLS credentials.
 	unary, stream := auth.Interceptors(cfg.APIKey)
+	grpcMetrics := grpc.UnaryInterceptor(chainUnary(unary, metricsUnaryInterceptor(m)))
 	grpcSrv := grpc.NewServer(
-		grpc.UnaryInterceptor(unary),
+		grpcMetrics,
 		grpc.StreamInterceptor(stream),
+		grpc.Creds(serverCreds),
 	)
 	pb.RegisterFileDBServer(grpcSrv, server.NewGRPCServer(db))
 
@@ -118,21 +194,28 @@ func serve(cfg server.Config) error {
 	}
 	log.Printf("filedb: gRPC listening on %s", cfg.GRPCAddr)
 
-	// Unix socket listener for gRPC (local connections).
+	// Unix socket gRPC server — always insecure (local-only transport).
+	unixGrpcSrv := grpc.NewServer(
+		grpcMetrics,
+		grpc.StreamInterceptor(stream),
+		grpc.Creds(insecure.NewCredentials()),
+	)
+	pb.RegisterFileDBServer(unixGrpcSrv, server.NewGRPCServer(db))
+
 	_ = os.Remove(cfg.UnixSocket)
 	unixLn, err := net.Listen("unix", cfg.UnixSocket)
 	if err != nil {
 		log.Printf("filedb: unix socket unavailable (%v), skipping", err)
 	} else {
 		log.Printf("filedb: gRPC unix socket at %s", cfg.UnixSocket)
-		go func() { _ = grpcSrv.Serve(unixLn) }()
+		go func() { _ = unixGrpcSrv.Serve(unixLn) }()
 	}
 
-	// REST gateway.
+	// REST gateway dials the TCP gRPC server using the matching credentials.
 	ctx, cancelGW := context.WithCancel(context.Background())
 	defer cancelGW()
 
-	restHandler, err := server.NewRESTGateway(ctx, cfg.GRPCAddr)
+	restHandler, err := server.NewRESTGateway(ctx, cfg.GRPCAddr, restDialCreds)
 	if err != nil {
 		return fmt.Errorf("rest gateway: %w", err)
 	}
@@ -154,6 +237,7 @@ func serve(cfg server.Config) error {
 	log.Println("filedb: shutting down...")
 
 	grpcSrv.GracefulStop()
+	unixGrpcSrv.GracefulStop()
 
 	shutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -165,4 +249,27 @@ func serve(cfg server.Config) error {
 
 	log.Println("filedb: stopped")
 	return nil
+}
+
+// chainUnary returns a single UnaryServerInterceptor that runs first, then second.
+func chainUnary(first, second grpc.UnaryServerInterceptor) grpc.UnaryServerInterceptor {
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		return first(ctx, req, info, func(ctx context.Context, req any) (any, error) {
+			return second(ctx, req, info, handler)
+		})
+	}
+}
+
+// metricsUnaryInterceptor records request duration and gRPC status code.
+func metricsUnaryInterceptor(m *metrics.Metrics) grpc.UnaryServerInterceptor {
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		start := time.Now()
+		resp, err := handler(ctx, req)
+		code := codes.OK
+		if err != nil {
+			code = grpcstatus.Code(err)
+		}
+		m.ObserveGRPC(info.FullMethod, code.String(), time.Since(start))
+		return resp, err
+	}
 }
