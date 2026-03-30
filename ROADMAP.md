@@ -126,19 +126,26 @@ BeginTx  CommitTx  RollbackTx
 ### High Priority
 
 #### 1. Language clients
-The proto file is ready. All three clients just need `protoc`/`buf` generation + thin wrappers.
+The proto file is ready. Seven language clients are planned — see [`clients/PLAN.md`](clients/PLAN.md) for the full step-by-step implementation checklist.
 
 | Client | Package manager | Status |
 |---|---|---|
-| `clients/python/` | PyPI: `pip install filedbv2` | Not started |
-| `clients/php/` | Packagist: `composer require srjn45/filedbv2` | Not started |
-| `clients/js/` | npm: `npm install filedbv2` | Not started |
+| `clients/python/` | PyPI: `pip install filedbv2` | ⬜ Not started |
+| `clients/js/` | npm: `npm install filedbv2` | ⬜ Not started |
+| `clients/php/` | Packagist: `composer require srjn45/filedbv2` | ⬜ Not started |
+| `clients/java/` | Maven Central: `com.srjn45:filedbv2-client` | ✅ Done |
+| `clients/ruby/` | RubyGems: `gem install filedbv2` | ⬜ Not started |
+| `clients/rust/` | crates.io: `filedbv2` | ⬜ Not started |
+| `clients/csharp/` | NuGet: `FileDBv2.Client` | ⬜ Not started |
 
 Each client needs:
-1. Run `buf generate` with the target language plugin
-2. Write a `FileDB` class wrapper with ergonomic method names
-3. Handle connection setup (host, API key, Unix socket for Python/Node local use)
-4. Write a README + publish to the package registry
+1. Proto stub generation (language-specific `protoc` plugin or `buf` remote plugin)
+2. Package scaffolding (manifest + directory structure)
+3. `FileDB` class wrapper — all RPCs with ergonomic method names
+4. Connection setup (host, port, API key, optional TLS CA cert; Unix socket for Python/Node)
+5. Runnable example program in `examples/`
+6. `README.md` + update to `docs/getting-started.md`
+7. Publish config for the package registry
 
 ### Medium Priority
 

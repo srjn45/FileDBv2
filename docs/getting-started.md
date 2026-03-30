@@ -344,6 +344,50 @@ When `--tls-ca` is given, the CLI dials TCP with TLS, verifying the server certi
 
 ---
 
+## Java SDK
+
+Add the dependency to your Gradle or Maven project:
+
+```kotlin
+// build.gradle.kts
+dependencies {
+    implementation("com.srjn45:filedbv2-client:0.1.0")
+}
+```
+
+```java
+import com.srjn45.filedbv2.FileDBClient;
+import java.util.List;
+import java.util.Map;
+
+try (FileDBClient db = new FileDBClient("localhost", 5433, "dev-key")) {
+    db.createCollection("users");
+
+    long id = db.insert("users", Map.of("name", "Alice", "age", 30));
+
+    Map<String, Object> record = db.findById("users", id);
+
+    List<Map<String, Object>> admins = db.find("users",
+            Map.of("field", "role", "op", "eq", "value", "admin"),
+            0, 0, "name", false);
+
+    db.update("users", id, Map.of("name", "Alice", "age", 31));
+    db.delete("users", id);
+    db.dropCollection("users");
+}
+```
+
+With TLS:
+
+```java
+FileDBClient db = new FileDBClient("myserver.example.com", 5433, "api-key",
+        new java.io.File("/path/to/ca.crt"));
+```
+
+See [clients/java/README.md](../clients/java/README.md) for the full API reference, filter syntax, and transaction usage.
+
+---
+
 ## Prometheus metrics
 
 When `--metrics-addr` is set (default `:9090`), FileDB exposes a `/metrics` endpoint in Prometheus format.
