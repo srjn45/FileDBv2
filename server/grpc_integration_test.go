@@ -3,6 +3,7 @@ package server_test
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"testing"
@@ -17,8 +18,6 @@ import (
 	pb "github.com/srjn45/filedbv2/internal/pb/proto"
 	"github.com/srjn45/filedbv2/server"
 )
-
-const testAPIKey = "test-secret"
 
 // newTestServer spins up an in-process gRPC server backed by a real engine.DB
 // and returns a connected client. The server is stopped when the test ends.
@@ -185,7 +184,7 @@ func collectFind(t *testing.T, stream pb.FileDB_FindClient) []*pb.Record {
 	var out []*pb.Record
 	for {
 		resp, err := stream.Recv()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {

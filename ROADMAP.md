@@ -142,8 +142,8 @@ Each client needs:
 
 ### Medium Priority
 
-#### 2. `golangci-lint` — stricter rules
-`.golangci.yml` exists with `bodyclose`, `errorlint`, `copyloopvar`. Consider adding `staticcheck`, `govet`, `unused` once pb-generated code exclusions are tuned.
+#### ~~2. `golangci-lint` — stricter rules~~ ✅ Done
+`.golangci.yml` now explicitly enables `staticcheck`, `govet`, `nilerr`, and `misspell` in addition to `bodyclose`, `errorlint`, `copyloopvar`. Generated pb code is excluded. All existing violations were fixed.
 
 ### Low Priority / Future
 

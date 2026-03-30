@@ -80,7 +80,7 @@ func LoadConfigFile(path string) (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("open config file: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	// Start from defaults so omitted keys keep their default value.
 	defaults := DefaultConfig()

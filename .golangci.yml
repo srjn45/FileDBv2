@@ -5,8 +5,12 @@ linters:
   # Add a few extras that catch real bugs without being noisy.
   enable:
     - bodyclose     # HTTP response body not closed
-    - errorlint     # incorrect error wrapping (Go 1.13+)
     - copyloopvar   # loop variable capture bugs
+    - errorlint     # incorrect error wrapping (Go 1.13+)
+    - nilerr        # returns nil instead of the error variable
+    - misspell      # common spelling mistakes in comments/strings
+    - staticcheck   # SA* and S* checks (explicitly enabled, previously default)
+    - govet         # reports suspicious constructs (explicitly enabled)
 
 formatters:
   exclusions:

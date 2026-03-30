@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	"google.golang.org/grpc"
@@ -113,7 +114,7 @@ func serveCmd() *cobra.Command {
 func serve(cfg server.Config) error {
 	// Set up Prometheus metrics.
 	reg := prometheus.NewRegistry()
-	reg.MustRegister(prometheus.NewGoCollector(), prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}))
+	reg.MustRegister(collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 	m := metrics.New(reg)
 
 	// Open the database, attaching the compaction hook.

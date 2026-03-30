@@ -22,7 +22,9 @@ segment_max_size: 1048576
 compact_interval: 10m
 compact_dirty_pct: 0.5
 `)
-		f.Close()
+		if err := f.Close(); err != nil {
+			t.Fatal(err)
+		}
 
 		cfg, err := LoadConfigFile(f.Name())
 		if err != nil {
@@ -61,7 +63,9 @@ compact_dirty_pct: 0.5
 			t.Fatal(err)
 		}
 		_, _ = f.WriteString("data_dir: /custom\n")
-		f.Close()
+		if err := f.Close(); err != nil {
+			t.Fatal(err)
+		}
 
 		cfg, err := LoadConfigFile(f.Name())
 		if err != nil {
@@ -93,7 +97,9 @@ compact_dirty_pct: 0.5
 			t.Fatal(err)
 		}
 		_, _ = f.WriteString("compact_interval: notaduration\n")
-		f.Close()
+		if err := f.Close(); err != nil {
+			t.Fatal(err)
+		}
 
 		_, err = LoadConfigFile(f.Name())
 		if err == nil {
@@ -107,7 +113,9 @@ compact_dirty_pct: 0.5
 			t.Fatal(err)
 		}
 		_, _ = f.WriteString("unknown_field: oops\n")
-		f.Close()
+		if err := f.Close(); err != nil {
+			t.Fatal(err)
+		}
 
 		_, err = LoadConfigFile(f.Name())
 		if err == nil {
