@@ -38,7 +38,12 @@ Key properties:
 - **Append-only writes** — inserts, updates, and deletes are always new lines; no in-place modification
 - **Background compaction** — a goroutine per collection merges and deduplicates sealed segments
 - **In-memory index** — O(1) lookup by id, persisted with a checksum for fast restarts
+- **Secondary indexes** — per-field inverted indexes for O(1) equality lookups; automatically maintained and persisted
+- **Transactions** — optimistic multi-operation transactions via `BeginTx` / `CommitTx` / `RollbackTx`
 - **gRPC + REST** — dual API served from one binary; CLI uses the Unix socket when local
+- **Optional TLS** — TCP gRPC listener can be secured with a cert/key pair; CLI verifies via `--tls-ca`
+- **YAML config file** — `--config filedb.yaml` with CLI flag overrides always winning
+- **Prometheus metrics** — per-collection gauges, compaction histograms, and gRPC request duration at `--metrics-addr`
 - **Single binary** — no JVM, no Python, no config files required to get started
 
 ---
@@ -60,8 +65,8 @@ It is **not** the right tool for multi-node replication, complex joins, or datas
 
 | Document | Description |
 |---|---|
-| [Getting Started](docs/getting-started.md) | Install, run, first queries |
-| [Architecture](docs/architecture.md) | Storage model, write/read paths, compaction, crash safety |
+| [Getting Started](docs/getting-started.md) | Install, run, first queries, TLS, config file, secondary indexes, metrics |
+| [Architecture](docs/architecture.md) | Storage model, write/read paths, compaction, secondary indexes, crash safety |
 
 ---
 

@@ -31,6 +31,8 @@ func (c *Collection) compactLoop() {
 // It operates only on sealed (immutable) segments so writes are never blocked
 // except during the brief atomic swap at the end.
 func (c *Collection) compact() error {
+	start := time.Now()
+
 	// --- Step 1: Snapshot sealed segments under read lock ---
 	c.mu.RLock()
 	if len(c.sealed) == 0 {
@@ -121,6 +123,10 @@ func (c *Collection) compact() error {
 			return fmt.Errorf("compactor: rebuild secondary index %q: %w", field, err)
 		}
 		_ = sidx.Persist(sidxFilePath(c.dir, field))
+	}
+
+	if c.cfg.OnCompaction != nil {
+		c.cfg.OnCompaction(c.name, time.Since(start))
 	}
 
 	return nil

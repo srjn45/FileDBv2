@@ -17,7 +17,8 @@ data/
     ├── seg_000002.ndjson   # sealed
     ├── seg_000003.ndjson   # active (append target)
     ├── index.json          # persisted id → {segment, offset} map
-    └── meta.json           # id counter, created_at
+    ├── meta.json           # id counter, created_at
+    └── sidx_email.json     # secondary index for "email" field (if created)
 ```
 
 ### Segment files (NDJSON)
@@ -48,7 +49,8 @@ Collection.Insert / Update / Delete
     │
     ├── acquire write lock (sync.RWMutex)
     ├── append NDJSON entry to active segment (sequential write)
-    ├── update in-memory index
+    ├── update in-memory primary index
+    ├── update in-memory secondary indexes (all indexed fields)
     ├── release write lock
     │
     ├── if segment size ≥ limit → rotate (seal + new active)
@@ -63,17 +65,20 @@ Writes are always sequential appends — the fastest possible disk operation.
 
 ```
 FindById:
-    acquire read lock → index lookup → seek to offset → read one line → decode
+    acquire read lock → primary index lookup → seek to offset → read one line → decode
 
-Find (scan):
+Find (scan) without index:
     acquire read lock → iterate all segments → apply filter → stream results
+
+Find (scan) with secondary index (single eq filter on indexed field):
+    acquire read lock → secondary index lookup (O(1)) → fetch matching ids via primary index
 ```
 
-The in-memory index makes `FindById` an O(1) index lookup + one disk seek.
+The in-memory primary index makes `FindById` an O(1) index lookup + one disk seek. A secondary index on a field reduces `Find` with a single equality filter from O(n) to O(1).
 
 ---
 
-## In-Memory Index
+## In-Memory Primary Index
 
 ```
 map[uint64]IndexEntry{
@@ -85,7 +90,32 @@ map[uint64]IndexEntry{
 - Updated on every write (same write lock scope)
 - Persisted to `index.json` with a SHA-256 checksum on every close
 - Loaded on startup; rebuilt from segment scans if checksum fails
-- Rebuild is also triggered after compaction (offsets change)
+- Rebuilt after compaction (offsets change)
+
+---
+
+## Secondary Indexes
+
+Secondary indexes are per-field inverted indexes stored in memory and on disk:
+
+```
+map[string]map[string][]uint64
+// field → value → []id
+```
+
+### Lifecycle
+
+- Created with `EnsureIndex(field)` — idempotent, builds from existing data on first call
+- Dropped with `DropIndex(field)` — removes from memory and deletes `sidx_<field>.json`
+- Listed with `ListIndexes()`
+- Maintained automatically on every Insert / Update / Delete (same write lock scope)
+- Persisted to `sidx_<field>.json` with a SHA-256 checksum
+- Reloaded on startup; rebuilt from segments if the checksum fails
+- Rebuilt transparently after each compaction run
+
+### Query acceleration
+
+`Scan` uses the secondary index when the filter is a single `eq` on an indexed field. All other filter shapes (composite filters, non-eq ops, non-indexed fields) fall back to a full segment scan.
 
 ---
 
@@ -122,9 +152,10 @@ Runs as a goroutine per collection. Two trigger conditions (whichever fires firs
 5. Acquire write lock
 6. Atomic rename: temp → final segment files
 7. Delete old dirty segments
-8. Rebuild in-memory index
+8. Rebuild primary index and all secondary indexes
 9. Release write lock
-10. Persist updated index to disk
+10. Persist updated indexes to disk
+11. Fire OnCompaction hook (used by Prometheus metrics)
 ```
 
 ### Rebalancer
@@ -133,10 +164,25 @@ After compaction, adjacent segments smaller than 10% of `SegmentMaxSize` are mer
 
 ---
 
+## Transactions
+
+Transactions are optimistic and scoped to a single collection. Operations are staged in memory and applied atomically on commit:
+
+```
+BeginTx   → allocate tx_id, create in-memory staging buffer
+Insert / Update / Delete (with tx_id) → append to staging buffer (no disk write)
+CommitTx  → acquire write lock → apply all staged ops sequentially → release
+RollbackTx → discard staging buffer
+```
+
+Staged operations bypass the normal single-operation write path; the write lock is held for the entire commit batch.
+
+---
+
 ## Crash Safety
 
 - **Partial write recovery**: on segment open, the last line is validated. Any partial line (from a crash mid-write) is detected and truncated before the segment is used.
-- **Index recovery**: on startup, the index checksum is verified. A mismatch triggers a full rebuild by replaying all segment entries.
+- **Index recovery**: on startup, both the primary index and each secondary index checksum are verified. A mismatch triggers a full rebuild by replaying all segment entries.
 - **Atomic segment swap**: compaction uses `os.Rename` which is atomic on POSIX filesystems. The old segments are only deleted after the new ones are in place.
 
 ---
@@ -144,24 +190,50 @@ After compaction, adjacent segments smaller than 10% of `SegmentMaxSize` are mer
 ## Network Layer
 
 ```
-┌──────────────────────────────────────┐
-│  filedb binary                       │
-│                                      │
-│  ┌────────────┐   ┌────────────────┐ │
-│  │ gRPC server│   │ REST gateway   │ │
-│  │ :5433      │   │ :8080          │ │
-│  │ (TCP)      │   │ (grpc-gateway) │ │
-│  └─────┬──────┘   └───────┬────────┘ │
-│        │                  │          │
-│  ┌─────▼──────────────────▼────────┐ │
-│  │ Unix socket /tmp/filedb.sock    │ │
-│  │ (local connections)             │ │
-│  └────────────────┬────────────────┘ │
-│                   │                  │
-│  ┌────────────────▼────────────────┐ │
-│  │ engine.DB                       │ │
-│  └─────────────────────────────────┘ │
-└──────────────────────────────────────┘
+┌───────────────────────────────────────────────┐
+│  filedb binary                                │
+│                                               │
+│  ┌────────────────┐   ┌──────────────────────┐│
+│  │ gRPC/TCP :5433 │   │ REST gateway :8080   ││
+│  │ (optional TLS) │   │ (grpc-gateway)       ││
+│  └───────┬────────┘   └──────────┬───────────┘│
+│          │                       │             │
+│  ┌───────▼───────────────────────▼───────────┐ │
+│  │ Unix socket /tmp/filedb.sock              │ │
+│  │ (local connections, always insecure)      │ │
+│  └───────────────────────┬───────────────────┘ │
+│                          │                     │
+│  ┌───────────────────────▼───────────────────┐ │
+│  │ engine.DB                                 │ │
+│  └───────────────────────────────────────────┘ │
+│                                               │
+│  ┌────────────────────────────────────────┐   │
+│  │ Prometheus metrics :9090/metrics       │   │
+│  └────────────────────────────────────────┘   │
+└───────────────────────────────────────────────┘
 ```
 
-The CLI client auto-detects the Unix socket when available (lower latency for local use), falling back to TCP.
+- **TCP gRPC listener** — optional TLS via `--tls-cert` / `--tls-key`. When both flags are set, `credentials.NewTLS()` is used; otherwise `insecure.NewCredentials()`.
+- **REST gateway** — dials the TCP gRPC server on the internal loopback. Uses `InsecureSkipVerify` for this internal hop (the cert may be self-signed).
+- **Unix socket** — always uses `insecure.NewCredentials()`. The CLI auto-detects this socket and prefers it for zero-overhead local connections.
+- **Metrics HTTP server** — serves Prometheus exposition format at `/metrics`. Disabled when `--metrics-addr` is empty.
+
+### Auth
+
+All gRPC calls (TCP and Unix socket) pass through unary and stream interceptors that validate the `x-api-key` metadata header using `crypto/subtle.ConstantTimeCompare`. Set `--api-key ""` to disable auth entirely.
+
+---
+
+## Observability
+
+FileDB exposes Prometheus metrics via a dedicated HTTP server (default `:9090/metrics`):
+
+| Metric | Type | Labels |
+|---|---|---|
+| `filedb_collection_records_total` | Gauge | `collection` |
+| `filedb_collection_segments_total` | Gauge | `collection` |
+| `filedb_compaction_runs_total` | Counter | `collection` |
+| `filedb_compaction_duration_seconds` | Histogram | `collection` |
+| `filedb_grpc_request_duration_seconds` | Histogram | `method`, `code` |
+
+Per-collection gauges are sampled at scrape time via a custom `DBCollector`. Compaction metrics are recorded via an `OnCompaction` hook injected into `CollectionConfig` at startup. gRPC request duration is recorded by a unary interceptor chained after the auth interceptor.

@@ -48,6 +48,50 @@ export FILEDB_API_KEY=my-secret-key
 filedb serve --data ./data
 ```
 
+All flags and their defaults:
+
+| Flag | Default | Description |
+|---|---|---|
+| `--data` | `./data` | Data directory |
+| `--grpc-addr` | `:5433` | TCP gRPC listen address |
+| `--rest-addr` | `:8080` | REST gateway listen address |
+| `--socket` | `/tmp/filedb.sock` | Unix domain socket path |
+| `--api-key` | `$FILEDB_API_KEY` | API key (empty = no auth) |
+| `--metrics-addr` | `:9090` | Prometheus metrics address (empty = disabled) |
+| `--tls-cert` | *(none)* | Path to TLS certificate PEM file |
+| `--tls-key` | *(none)* | Path to TLS private key PEM file |
+| `--segment-size` | `4194304` | Max segment file size in bytes (4 MiB) |
+| `--compact-interval` | `5m` | Compaction interval |
+| `--compact-dirty` | `0.30` | Dirty-ratio threshold to trigger compaction |
+| `--config` | *(none)* | Path to YAML config file |
+
+---
+
+## YAML config file
+
+You can put all server options in a YAML file and load it with `--config`:
+
+```yaml
+# filedb.yaml
+data_dir: ./data
+grpc_addr: :5433
+rest_addr: :8080
+unix_socket: /tmp/filedb.sock
+api_key: my-secret-key
+metrics_addr: :9090
+segment_max_size: 4194304   # 4 MiB
+compact_interval: 5m
+compact_dirty_pct: 0.30
+# tls_cert: /etc/filedb/cert.pem
+# tls_key:  /etc/filedb/key.pem
+```
+
+```bash
+filedb serve --config filedb.yaml
+```
+
+CLI flags always override the config file. Omitted keys fall back to defaults.
+
 ---
 
 ## Use the CLI
@@ -119,6 +163,15 @@ filedb-cli export users > users_backup.ndjson
 cat users_backup.ndjson | filedb-cli import users
 ```
 
+### CLI connection flags
+
+| Flag | Default | Description |
+|---|---|---|
+| `--host` | `localhost:5433` | gRPC server address |
+| `--socket` | `/tmp/filedb.sock` | Unix socket path (used automatically when the file exists) |
+| `--api-key` | `$FILEDB_API_KEY` | API key |
+| `--tls-ca` | *(none)* | Path to CA certificate PEM for TLS (enables TLS on TCP) |
+
 ---
 
 ## Use via REST API
@@ -186,4 +239,136 @@ Supported operators: `eq`, `neq`, `gt`, `gte`, `lt`, `lte`, `contains`, `regex`
     {"field": "role", "op": "eq", "value": "superuser"}
   ]
 }
+```
+
+---
+
+## Secondary indexes
+
+Secondary indexes accelerate equality lookups on any field from O(n) full scan to O(1).
+
+```bash
+# Create an index on the "email" field
+filedb-cli ensure-index users email
+
+# List indexes on a collection
+filedb-cli indexes users
+
+# Drop an index
+filedb-cli drop-index users email
+```
+
+Once an index exists, `find` with a single `eq` filter on that field uses the index automatically — no query hint needed.
+
+Indexes are:
+- Persisted to `sidx_<field>.json` (SHA-256 checksummed) and reloaded on startup
+- Maintained automatically on every insert, update, and delete
+- Rebuilt transparently after compaction
+
+Via REST:
+
+```bash
+# Ensure index
+curl -X POST http://localhost:8080/v1/users/indexes \
+  -H "x-api-key: my-secret-key" \
+  -H "Content-Type: application/json" \
+  -d '{"field":"email"}'
+
+# List indexes
+curl http://localhost:8080/v1/users/indexes \
+  -H "x-api-key: my-secret-key"
+
+# Drop index
+curl -X DELETE http://localhost:8080/v1/users/indexes/email \
+  -H "x-api-key: my-secret-key"
+```
+
+---
+
+## Transactions
+
+Group multiple operations into an atomic unit. All staged writes are applied on commit, or discarded on rollback.
+
+```bash
+# Begin a transaction (prints tx_id)
+TX=$(filedb-cli begin-tx orders)
+
+# Stage writes inside the transaction
+filedb-cli insert orders '{"item":"widget","qty":1}' --tx-id "$TX"
+filedb-cli insert orders '{"item":"gadget","qty":2}' --tx-id "$TX"
+
+# Commit
+filedb-cli commit-tx "$TX"
+
+# Or rollback
+filedb-cli rollback-tx "$TX"
+```
+
+---
+
+## TLS
+
+TLS secures the TCP gRPC listener. The Unix socket always uses plaintext (local-only transport).
+
+### Server
+
+Generate a self-signed cert (development only):
+
+```bash
+openssl req -x509 -newkey rsa:4096 -nodes \
+  -keyout key.pem -out cert.pem \
+  -days 365 -subj "/CN=localhost"
+```
+
+Start with TLS:
+
+```bash
+filedb serve --data ./data --api-key my-secret-key \
+  --tls-cert cert.pem --tls-key key.pem
+```
+
+Or in `filedb.yaml`:
+
+```yaml
+tls_cert: /etc/filedb/cert.pem
+tls_key:  /etc/filedb/key.pem
+```
+
+### CLI with TLS
+
+```bash
+filedb-cli --tls-ca cert.pem --host localhost:5433 collections
+```
+
+When `--tls-ca` is given, the CLI dials TCP with TLS, verifying the server certificate against the provided CA. Without `--tls-ca`, the CLI connects insecurely (or uses the Unix socket if available).
+
+---
+
+## Prometheus metrics
+
+When `--metrics-addr` is set (default `:9090`), FileDB exposes a `/metrics` endpoint in Prometheus format.
+
+```bash
+curl http://localhost:9090/metrics
+```
+
+Available metrics:
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `filedb_collection_records_total` | Gauge | `collection` | Live record count per collection |
+| `filedb_collection_segments_total` | Gauge | `collection` | Segment file count per collection |
+| `filedb_compaction_runs_total` | Counter | `collection` | Total compaction runs per collection |
+| `filedb_compaction_duration_seconds` | Histogram | `collection` | Compaction run duration |
+| `filedb_grpc_request_duration_seconds` | Histogram | `method`, `code` | gRPC unary request duration by method and status code |
+
+Disable metrics by setting `--metrics-addr ""` (or `metrics_addr: ""` in the config file).
+
+Example Prometheus scrape config:
+
+```yaml
+scrape_configs:
+  - job_name: filedb
+    static_configs:
+      - targets: ['localhost:9090']
 ```

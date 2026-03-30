@@ -19,6 +19,10 @@ type CollectionConfig struct {
 	SegmentMaxSize  int64         // default: DefaultSegmentMaxSize
 	CompactInterval time.Duration // default: 5m
 	CompactDirtyPct float64       // default: 0.30 (30%)
+
+	// OnCompaction is called after each successful compaction run with the
+	// collection name and elapsed wall-clock duration. May be nil.
+	OnCompaction func(collection string, dur time.Duration)
 }
 
 func defaultConfig() CollectionConfig {
