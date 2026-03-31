@@ -46,7 +46,17 @@ func NewRESTGateway(ctx context.Context, grpcAddr string, creds credentials.Tran
 	if err := pb.RegisterFileDBHandlerFromEndpoint(ctx, mux, grpcAddr, opts); err != nil {
 		return nil, err
 	}
-	return corsMiddleware(watchInterceptor(mux, newTCPWatchDial(grpcAddr, creds))), nil
+
+	conn, err := grpc.NewClient(grpcAddr, grpc.WithTransportCredentials(creds))
+	if err != nil {
+		return nil, err
+	}
+	go func() {
+		<-ctx.Done()
+		_ = conn.Close()
+	}()
+
+	return corsMiddleware(watchInterceptor(mux, conn)), nil
 }
 
 // NewRESTGatewayUnix returns an http.Handler that dials the gRPC server via a
@@ -63,5 +73,20 @@ func NewRESTGatewayUnix(ctx context.Context, socketPath string) (http.Handler, e
 	if err := pb.RegisterFileDBHandlerFromEndpoint(ctx, mux, "unix://"+socketPath, opts); err != nil {
 		return nil, err
 	}
-	return corsMiddleware(watchInterceptor(mux, newUnixWatchDial(socketPath))), nil
+
+	conn, err := grpc.NewClient("unix://"+socketPath,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
+		}),
+	)
+	if err != nil {
+		return nil, err
+	}
+	go func() {
+		<-ctx.Done()
+		_ = conn.Close()
+	}()
+
+	return corsMiddleware(watchInterceptor(mux, conn)), nil
 }

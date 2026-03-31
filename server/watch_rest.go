@@ -1,55 +1,29 @@
 package server
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"io"
-	"net"
 	"net/http"
 	"strings"
 
 	pb "github.com/srjn45/filedbv2/internal/pb/proto"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/encoding/protojson"
 )
-
-// watchDialOpts bundles the address and dial options needed to reach the gRPC
-// server from the custom Watch HTTP handler.
-type watchDialOpts struct {
-	addr string
-	opts []grpc.DialOption
-}
 
 // watchInterceptor wraps next with a handler for POST /v1/{collection}/watch.
 // All other requests are forwarded to next unchanged.
 //
 // The grpc-gateway generator does not emit a handler for the Watch RPC; this
-// custom handler fills that gap by dialling back to the gRPC server and
+// custom handler fills that gap by using the shared conn to the gRPC server and
 // streaming the response as newline-delimited JSON in the grpc-gateway envelope
 // format:
 //
 //	{"result":<WatchEvent JSON>}\n
-func watchInterceptor(next http.Handler, dial watchDialOpts) http.Handler {
-	// I1: Create the gRPC connection once at construction time and share it
-	// across all requests via closure.
-	conn, err := grpc.NewClient(dial.addr, dial.opts...)
-	if err != nil {
-		// If we cannot dial at startup, fall back to a handler that always
-		// returns an error rather than panicking.
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.Method != http.MethodPost || !isWatchPath(r.URL.Path) {
-				next.ServeHTTP(w, r)
-				return
-			}
-			http.Error(w, "watch: dial: "+err.Error(), http.StatusBadGateway)
-		})
-	}
-
+func watchInterceptor(next http.Handler, conn *grpc.ClientConn) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || !isWatchPath(r.URL.Path) {
 			next.ServeHTTP(w, r)
@@ -131,25 +105,4 @@ func watchInterceptor(next http.Handler, dial watchDialOpts) http.Handler {
 func isWatchPath(path string) bool {
 	parts := strings.Split(strings.Trim(path, "/"), "/")
 	return len(parts) == 3 && parts[0] == "v1" && parts[2] == "watch"
-}
-
-// newTCPWatchDial returns watchDialOpts for dialling via TCP.
-func newTCPWatchDial(addr string, creds credentials.TransportCredentials) watchDialOpts {
-	return watchDialOpts{
-		addr: addr,
-		opts: []grpc.DialOption{grpc.WithTransportCredentials(creds)},
-	}
-}
-
-// newUnixWatchDial returns watchDialOpts for dialling via a Unix domain socket.
-func newUnixWatchDial(socketPath string) watchDialOpts {
-	return watchDialOpts{
-		addr: "unix://" + socketPath,
-		opts: []grpc.DialOption{
-			grpc.WithTransportCredentials(insecure.NewCredentials()),
-			grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
-				return (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
-			}),
-		},
-	}
 }
