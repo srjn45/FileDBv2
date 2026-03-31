@@ -4,11 +4,12 @@ import { ToastProvider } from './contexts/ToastContext'
 import ToastContainer from './components/Toast'
 import ConnectScreen from './components/ConnectScreen'
 import SettingsPanel from './components/SettingsPanel'
+import Sidebar from './components/Sidebar'
 
-// Sidebar and CollectionView are not yet implemented — placeholder divs for now
 function Shell() {
   const { settings, connected } = useApp()
   const [showSettings, setShowSettings] = useState(false)
+  const [activeCollection, setActiveCollection] = useState<string | null>(null)
 
   return (
     <div className="min-h-screen bg-gray-950 text-gray-100 flex flex-col">
@@ -37,10 +38,7 @@ function Shell() {
 
       {/* Body */}
       <div className="flex flex-1 overflow-hidden">
-        {/* Sidebar placeholder */}
-        <aside className="w-48 shrink-0 bg-gray-900 border-r border-gray-800 p-3 text-sm text-gray-500">
-          Sidebar (coming soon)
-        </aside>
+        <Sidebar activeCollection={activeCollection} onSelect={setActiveCollection} />
         {/* Content placeholder */}
         <main className="flex-1 p-6 text-gray-500">
           Select a collection
