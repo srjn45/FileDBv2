@@ -3,7 +3,10 @@ import type { FileDBRecord } from '../api/types'
 import { useApp } from '../contexts/AppContext'
 import { useToast } from '../contexts/ToastContext'
 import BrowseTab from './BrowseTab'
+import IndexesTab from './IndexesTab'
 import RecordModal from './RecordModal'
+import StatsTab from './StatsTab'
+import WatchTab from './WatchTab'
 
 type Tab = 'browse' | 'indexes' | 'stats' | 'watch'
 
@@ -73,15 +76,9 @@ export default function CollectionView({ collection, onDropped }: Props) {
             onEdit={(record) => setModalRecord(record)}
           />
         )}
-        {tab === 'indexes' && (
-          <div className="text-gray-500 text-sm">Indexes tab — coming soon</div>
-        )}
-        {tab === 'stats' && (
-          <div className="text-gray-500 text-sm">Stats tab — coming soon</div>
-        )}
-        {tab === 'watch' && (
-          <div className="text-gray-500 text-sm">Watch tab — coming soon</div>
-        )}
+        {tab === 'indexes' && <IndexesTab collection={collection} />}
+        {tab === 'stats' && <StatsTab collection={collection} />}
+        {tab === 'watch' && <WatchTab collection={collection} active={tab === 'watch'} />}
       </div>
 
       {/* Record modal */}
