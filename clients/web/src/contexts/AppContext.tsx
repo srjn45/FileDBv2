@@ -35,7 +35,7 @@ function loadSettings(): Settings {
   } catch {
     // ignore
   }
-  return { url: 'http://localhost:8080', apiKey: '' }
+  return { url: '', apiKey: '' }
 }
 
 const AppContext = createContext<AppContextValue | null>(null)

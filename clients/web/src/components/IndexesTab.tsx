@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useApp } from '../contexts/AppContext'
 import { useToast } from '../contexts/ToastContext'
 
@@ -11,7 +11,7 @@ export default function IndexesTab({ collection }: Props) {
   const [loading, setLoading] = useState(false)
   const [newField, setNewField] = useState('')
 
-  async function load() {
+  const load = useCallback(async () => {
     setLoading(true)
     try {
       setFields(await client.listIndexes(collection))
@@ -20,9 +20,11 @@ export default function IndexesTab({ collection }: Props) {
     } finally {
       setLoading(false)
     }
-  }
+  }, [client, collection, showToast])
 
-  useEffect(() => { void load() }, [collection]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    void load()
+  }, [load])
 
   async function handleEnsure(e: React.FormEvent) {
     e.preventDefault()

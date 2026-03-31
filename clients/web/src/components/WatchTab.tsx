@@ -72,8 +72,8 @@ export default function WatchTab({ collection, active }: Props) {
             {watching ? 'Waiting for events…' : 'Start watching to see live events'}
           </p>
         )}
-        {events.map((event, i) => (
-          <EventRow key={i} event={event} />
+        {events.map((event) => (
+          <EventRow key={`${event.ts}-${event.record?.id ?? ''}`} event={event} />
         ))}
       </div>
     </div>
