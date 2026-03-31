@@ -52,6 +52,16 @@ Compaction:  resolve latest per id → write clean segments → atomic swap → 
 
 ## What Is Done ✅
 
+### Web admin UI — shipped
+- [x] `clients/web/` — React 18 + TypeScript + Vite + Tailwind CSS browser UI (dark theme)
+  - Browse and manage collections (create, drop), full CRUD on records with filter/order/pagination
+  - Secondary index management (ensure/drop), collection stats (auto-refresh every 30 s)
+  - Live Watch event feed via ReadableStream streaming
+  - Connection settings (URL + API key) persisted to `localStorage`
+  - CORS middleware added to REST gateway (`server/rest.go`)
+  - Custom Watch REST handler (`server/watch_rest.go`) — fills grpc-gateway gap for server-streaming RPCs
+  - Vite dev proxy: `/v1` → `:8080` for seamless local development
+
 ### Phase 1 — Project Scaffold
 - [x] Directory structure: `internal/`, `server/`, `cmd/`, `clients/`, `docs/`, `.github/`
 - [x] Go module: `github.com/srjn45/filedbv2` (Go 1.22+)

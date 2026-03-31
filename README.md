@@ -45,6 +45,7 @@ Key properties:
 - **YAML config file** — `--config filedb.yaml` with CLI flag overrides always winning
 - **Prometheus metrics** — per-collection gauges, compaction histograms, and gRPC request duration at `--metrics-addr`
 - **Single binary** — no JVM, no Python, no config files required to get started
+- **Web admin UI** — browser-based collection and record manager at `clients/web/` (React + Vite, talks to the REST gateway)
 
 ---
 

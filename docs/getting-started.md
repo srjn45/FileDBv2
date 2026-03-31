@@ -344,6 +344,35 @@ When `--tls-ca` is given, the CLI dials TCP with TLS, verifying the server certi
 
 ---
 
+## Web UI
+
+FileDB v2 ships a browser-based admin UI built with React 18, TypeScript, Vite, and Tailwind CSS (dark theme). It connects to the existing REST gateway at `:8080`.
+
+**Features:** browse and manage collections (create, drop), full CRUD on records with filter/order/pagination, secondary index management, collection stats (auto-refreshes every 30 s), live Watch event feed via streaming, and connection settings (URL + API key) saved to `localStorage`.
+
+### Development server
+
+```bash
+cd clients/web
+npm install
+npm run dev
+# Open http://localhost:5173
+```
+
+The Vite dev server proxies all `/v1` requests to `http://localhost:8080`, so the FileDB server must be running (`make run`).
+
+### Production build
+
+```bash
+cd clients/web
+npm run build
+# Output in clients/web/dist/
+```
+
+Serve `dist/` with any static file server; point it at a running FileDB REST gateway.
+
+---
+
 ## JavaScript / TypeScript SDK
 
 Install:
