@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect } from 'react'
 import type { FileDBRecord, FindRequest } from '../api/types'
 import { useApp } from '../contexts/AppContext'
 import { useToast } from '../contexts/ToastContext'

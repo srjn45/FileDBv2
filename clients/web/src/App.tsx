@@ -5,6 +5,7 @@ import ToastContainer from './components/Toast'
 import ConnectScreen from './components/ConnectScreen'
 import SettingsPanel from './components/SettingsPanel'
 import Sidebar from './components/Sidebar'
+import CollectionView from './components/CollectionView'
 
 function Shell() {
   const { settings, connected } = useApp()
@@ -39,9 +40,17 @@ function Shell() {
       {/* Body */}
       <div className="flex flex-1 overflow-hidden">
         <Sidebar activeCollection={activeCollection} onSelect={setActiveCollection} />
-        {/* Content placeholder */}
-        <main className="flex-1 p-6 text-gray-500">
-          Select a collection
+        <main className="flex-1 overflow-hidden">
+          {activeCollection ? (
+            <CollectionView
+              collection={activeCollection}
+              onDropped={() => setActiveCollection(null)}
+            />
+          ) : (
+            <div className="flex items-center justify-center h-full text-gray-600 text-sm">
+              Select a collection from the sidebar
+            </div>
+          )}
         </main>
       </div>
 
