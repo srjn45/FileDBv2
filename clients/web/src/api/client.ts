@@ -2,6 +2,7 @@ import type {
   CollectionStats,
   FileDBRecord,
   FindRequest,
+  RecordData,
   WatchEvent,
 } from './types'
 import { FileDBError } from './types'
@@ -50,7 +51,7 @@ export class FileDBClient {
 
   // ---- Records --------------------------------------------------------------
 
-  async insert(collection: string, data: unknown): Promise<{ id: string }> {
+  async insert(collection: string, data: RecordData): Promise<{ id: string }> {
     return this.request('POST', `/v1/${encodeURIComponent(collection)}/records`, { data })
   }
 
@@ -77,12 +78,17 @@ export class FileDBClient {
       .split('\n')
       .filter(Boolean)
       .map((line) => {
-        const envelope = JSON.parse(line) as { result?: { record: FileDBRecord } }
-        return envelope.result!.record
+        const envelope = JSON.parse(line) as
+          | { result: { record: FileDBRecord } }
+          | { error: { message: string; code?: number } }
+        if ('error' in envelope) {
+          throw new FileDBError(500, envelope.error.message)
+        }
+        return envelope.result.record
       })
   }
 
-  async update(collection: string, id: string, data: unknown): Promise<void> {
+  async update(collection: string, id: string, data: RecordData): Promise<void> {
     await this.request(
       'PUT',
       `/v1/${encodeURIComponent(collection)}/records/${encodeURIComponent(id)}`,
