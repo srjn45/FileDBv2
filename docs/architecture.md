@@ -259,6 +259,89 @@ filtered field — flips `index_used` to `true` and collapses `rows_scanned`.
 
 ---
 
+## Encryption at rest
+
+Encryption at rest is transparent and lives entirely at the **collection
+boundary** of the embedded engine. The core invariant is that ciphertext lives
+only inside the stored `data` map: everything downstream — segment files,
+compaction, the primary and secondary indexes, the replication feed, and the
+`store` package — stays **key-oblivious**, because it only ever sees already-sealed
+bytes. The `crypto/` package is the sole holder of key material.
+
+### Envelope and cipher
+
+Each encrypted value is an AEAD envelope
+`<marker>:v1:<key-id>:<base64url(nonce‖ciphertext+tag)>`, where `<marker>` is a
+reserved leading-NUL sentinel. The cipher is XChaCha20-Poly1305 (192-bit random
+nonce, so per-write nonce collision is not a concern); the collection name, field
+name, and record key are bound in as additional authenticated data, so a blob
+cannot be silently relocated to another field or record. A user value that begins
+with the reserved marker is rejected on write (`ErrReservedPrefix`), keeping the
+marker an infallible discriminator: reads are **policy-independent**, driven only
+by whether a value carries the marker, so a half-migrated collection still decodes
+correctly.
+
+### Two modes
+
+- **Field-level** (`EncryptFields`) — a deny-list of top-level fields is sealed in
+  place; every other field stays plaintext and queryable.
+- **Record-level** (`EncryptRecord`) — the whole record is sealed into a single
+  reserved `secure_data` blob, keeping only an allow-list of index fields (and the
+  reserved `_key`) plaintext.
+
+The reconstruction (**read**) mode is fixed when encryption is first enabled and
+never changes for the life of the collection, so records written under any earlier
+write policy still decode. The **write** policy is mutable (an empty policy
+disables sealing while reads still reconstruct residual ciphertext). The encryptor
+is immutable and swapped atomically on a policy change, so lock-free readers always
+see a consistent snapshot.
+
+### Where it hooks in
+
+`sealEntryData` runs on every write path (Insert/InsertMany/Update/Upsert/CommitTx/
+CAS) before the entry is appended, so nothing is written if sealing fails.
+Decryption is lazy and **fail-closed** at the read/yield boundary (`Get`,
+`ScanStream`): a wrong or missing key surfaces as a typed error
+(`ErrKeyUnavailable` / `ErrDecryptFailed` / `ErrWrongEncryptionKey`) rather than
+garbage. Because encrypted fields are opaque on disk, indexing, filtering, sorting,
+or aggregating on them is rejected at the `forEachMatch` choke point with
+`ErrFieldEncrypted`.
+
+### Keys, wrong-key detection, and meta.json
+
+Keys come from a `crypto.KeyProvider` — the built-in `Keyring` (behind
+`WithEncryptionKey` / `WithPassphrase`) or a caller-supplied provider
+(`WithKeyProvider`). The `encryption` block of `meta.json` records the write
+policy, read mode, policy epoch, the passphrase KDF parameters + salt (non-secret),
+a `key_check` (an AEAD-sealed known constant), and the current key id. On `Open`,
+the `key_check` is verified under the supplied key so a wrong key/passphrase fails
+fast. None of this block is secret — it reveals nothing without the key.
+
+### Migration: epochs, functional vs security completion
+
+Every policy change (enable/disable, field add/remove, key rotation) bumps a
+monotonic **epoch**, stamped onto each written entry and mirrored onto its index
+entry. Existing records migrate two ways: **lazily**, as an update rewrites them
+under the current policy, or in **bulk** via a re-encrypting compaction pass
+(`MigrateNow` seals the active segment, then forces a compaction that decrypts each
+entry below the current epoch and re-encrypts it under the current key — all before
+the manifest is written, so a retired-key decrypt failure aborts the pass with
+nothing mutated). Two notions of "done":
+
+- **Functional completion** — every *live* record is at the current epoch, so reads
+  behave exactly per the current policy. It is judged from an in-memory index walk
+  (`EncryptionStatus`), with no segment reads.
+- **Security completion** — no stale old-form bytes remain at rest (superseded rows
+  can still hold them until reclaimed). It requires a completed compaction pass, and
+  is the bar for retiring an old key or indexing a de-encrypted field.
+
+Because segments already hold ciphertext, **backups and replication carry encrypted
+data for free** (see [Backup / snapshot](#backup--snapshot)); the key must be backed
+up separately, or the backup is unrecoverable. The full design rationale is in
+[encryption-at-rest.md](encryption-at-rest.md).
+
+---
+
 ## In-Memory Primary Index
 
 ```

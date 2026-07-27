@@ -162,6 +162,12 @@ func Open(dir string, opts ...Option) (*DB, error) {
 	for _, o := range opts {
 		o(&base)
 	}
+	// Finalize key material now that the data directory is known: surface any
+	// deferred option error, and resolve a passphrase provider against the salt
+	// persisted under dir (see resolveKeyOptions in encryption.go).
+	if err := resolveKeyOptions(dir, &base); err != nil {
+		return nil, err
+	}
 
 	edb, err := engine.Open(dir, base)
 	if err != nil {

@@ -101,6 +101,15 @@ full breaking-change and migration notes.
 - [x] OpenAPI/Swagger spec generated from proto (`docs/openapi/scriva.swagger.json`, `make openapi`) — universal client-generation path
 - [x] `LICENSE` file added (MIT)
 
+### Encryption at rest (embedded) — shipped
+- [x] Transparent field- and record-level encryption for the embedded engine, configured through the façade
+  - `crypto/` self-contained primitive: XChaCha20-Poly1305 AEAD, `<marker>:v1:<key-id>:<b64url>` envelope, `Keyring`/`KeyProvider`, Argon2id KDF, typed errors, per-value reserved marker
+  - Engine boundary seals on every write path and decrypts (lazily, fail-closed) at the read/yield boundary; segments, compaction, index, and replication stay key-oblivious; `store/` never touches key material
+  - Policy **epoch** with lazy migration (rewrite-on-update) + bulk **re-encrypting compaction**; runtime `SetEncryptionPolicy` / `RotateKey` / `MigrateNow` / `CompactNow` / `EncryptionStatus` on `Collection`; functional vs security completion
+  - Wrong-key detection via a `key_check` in `meta.json` — a wrong key/passphrase fails fast on `Open` with `ErrWrongEncryptionKey`
+  - Façade options: `scriva.WithEncryptionKey` / `WithPassphrase` / `WithKeyProvider`, and `WithCollectionEncryption` + `EncryptFields` / `EncryptRecord`; passphrase salt persisted (non-secret) in `meta.json` and re-derived on reopen
+  - Docs: `docs/encryption-at-rest.md` (design), `docs/getting-started.md` + `docs/architecture.md` (usage & internals)
+
 ### Web admin UI — shipped
 - [x] `clients/web/` — React 18 + TypeScript + Vite + Tailwind CSS browser UI (dark theme)
   - Browse and manage collections (create, drop), full CRUD on records with filter/order/pagination
