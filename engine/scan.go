@@ -141,13 +141,13 @@ func (c *Collection) ScanStream(ctx context.Context, opts ScanOptions, yield fun
 	// Reject a sort on an encrypted field at planning time — the stored form is
 	// opaque, so it cannot be ordered. Filters are validated in forEachMatch,
 	// which every scan/count/aggregate funnels through.
-	if c.enc != nil {
+	if enc := c.enc.Load(); enc != nil {
 		for _, sf := range opts.Sort {
-			if err := c.enc.checkField(sf.Field); err != nil {
+			if err := enc.checkField(sf.Field); err != nil {
 				return *stats, err
 			}
 		}
-		if err := c.enc.checkField(opts.OrderBy); err != nil {
+		if err := enc.checkField(opts.OrderBy); err != nil {
 			return *stats, err
 		}
 	}
@@ -289,8 +289,8 @@ func (c *Collection) forEachMatch(ctx context.Context, f query.Filter, stats *Sc
 	// Reject any predicate on an encrypted field before scanning. This is the one
 	// choke point every scan, Count, and Aggregate funnels through, so validating
 	// here covers them all.
-	if c.enc != nil {
-		if err := c.enc.checkFilterFields(f); err != nil {
+	if enc := c.enc.Load(); enc != nil {
+		if err := enc.checkFilterFields(f); err != nil {
 			return err
 		}
 	}
@@ -435,10 +435,11 @@ func ProjectData(data map[string]any, fields []string) map[string]any {
 // decrypts only the fields that survive projection (lazy decrypt) and is
 // fail-closed: a decrypt error is propagated, never turned into a partial result.
 func (c *Collection) finalizeRecord(ctx context.Context, stored map[string]any, fields []string) (map[string]any, error) {
-	if c.enc == nil {
+	enc := c.enc.Load()
+	if enc == nil {
 		return ProjectData(stored, fields), nil
 	}
-	return c.enc.materialize(ctx, stored, fields)
+	return enc.materialize(ctx, stored, fields)
 }
 
 // sortLess returns a total ordering over ScanResults for a multi-field sort. Each

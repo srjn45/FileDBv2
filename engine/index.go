@@ -30,6 +30,12 @@ type IndexEntry struct {
 	// record without touching disk. Omitted when zero for backward-compatible
 	// index.json files.
 	ExpiresAt int64 `json:"expires_at,omitempty"`
+	// Epoch is the encryption-policy epoch the record was written under, mirrored
+	// from the segment entry so migration completeness can be judged from the
+	// in-memory index alone (no segment reads): a collection is functionally
+	// migrated when every live entry is at the current epoch. Omitted when zero for
+	// backward-compatible index.json files.
+	Epoch uint64 `json:"epoch,omitempty"`
 }
 
 // indexFile is the on-disk representation persisted to index.json.
@@ -77,6 +83,22 @@ func (idx *Index) Len() int {
 	n := len(idx.entries)
 	idx.mu.RUnlock()
 	return n
+}
+
+// countAtEpoch returns the number of live records and, of those, how many were
+// written at the given epoch. It answers migration completeness (every live
+// record at the current epoch) from the in-memory index alone, with no segment
+// reads.
+func (idx *Index) countAtEpoch(epoch uint64) (total, atEpoch int) {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	total = len(idx.entries)
+	for _, e := range idx.entries {
+		if e.Epoch == epoch {
+			atEpoch++
+		}
+	}
+	return total, atEpoch
 }
 
 // Persist serialises the index to path with an embedded SHA-256 checksum.
@@ -187,7 +209,7 @@ func (idx *Index) Rebuild(segments []*Segment) error {
 				if e.Rev > rev {
 					rev = e.Rev
 				}
-				fresh[e.ID] = IndexEntry{SegmentPath: seg.Path(), Offset: offsets[i], Rev: rev, ExpiresAt: e.ExpiresAt}
+				fresh[e.ID] = IndexEntry{SegmentPath: seg.Path(), Offset: offsets[i], Rev: rev, ExpiresAt: e.ExpiresAt, Epoch: e.Epoch}
 			case store.OpDelete:
 				delete(fresh, e.ID)
 			}

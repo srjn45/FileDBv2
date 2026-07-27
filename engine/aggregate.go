@@ -72,11 +72,11 @@ func (c *Collection) Aggregate(ctx context.Context, spec AggregateSpec, emit fun
 
 	// An encrypted field is opaque, so it cannot be grouped by or numerically
 	// aggregated. The filter is validated inside forEachMatch/Count below.
-	if c.enc != nil {
-		if err := c.enc.checkField(spec.GroupBy); err != nil {
+	if enc := c.enc.Load(); enc != nil {
+		if err := enc.checkField(spec.GroupBy); err != nil {
 			return err
 		}
-		if err := c.enc.checkField(spec.Field); err != nil {
+		if err := enc.checkField(spec.Field); err != nil {
 			return err
 		}
 	}

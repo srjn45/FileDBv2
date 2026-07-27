@@ -562,7 +562,7 @@ func (c *Collection) applyEntry(e store.Entry) error {
 			c.mu.Unlock()
 			return fmt.Errorf("collection: apply write: %w", err)
 		}
-		c.index.Set(e.ID, IndexEntry{SegmentPath: c.active.Path(), Offset: offset, Rev: e.Rev, ExpiresAt: e.ExpiresAt})
+		c.index.Set(e.ID, IndexEntry{SegmentPath: c.active.Path(), Offset: offset, Rev: e.Rev, ExpiresAt: e.ExpiresAt, Epoch: e.Epoch})
 		if exists {
 			c.sidxUpdateEntry(e.ID, e.Data)
 		} else {

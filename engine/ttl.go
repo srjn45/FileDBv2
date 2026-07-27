@@ -16,7 +16,7 @@ func (c *Collection) metaSnapshot() collectionMeta {
 		DefaultTTLSeconds: c.explicitDefaultTTLSecs,
 		// Carry the encryption block on every snapshot so no write path (rotate,
 		// tx commit, close) silently drops it from meta.json.
-		Encryption: c.encMeta,
+		Encryption: c.encMeta.Load(),
 	}
 }
 

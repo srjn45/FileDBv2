@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -94,7 +95,11 @@ func (c *Collection) compact(force bool) error {
 	c.mu.RUnlock()
 
 	// --- Step 2: Check dirty ratio (skipped for a forced compaction) ---
-	if !force && !c.isDirty(toCompact) {
+	// A pending encryption migration (entries below the current policy epoch in
+	// these segments) also justifies a pass even when the dirty ratio is low, so
+	// background compaction eventually brings every sealed record to the current
+	// policy without an operator forcing it.
+	if !force && !c.isDirty(toCompact) && !c.migrationPendingIn(toCompact) {
 		return nil
 	}
 
@@ -102,6 +107,15 @@ func (c *Collection) compact(force bool) error {
 	resolved, err := resolveEntries(toCompact)
 	if err != nil {
 		return fmt.Errorf("compactor: resolve: %w", err)
+	}
+
+	// Re-encrypt surviving entries that predate the current policy epoch, bringing
+	// them to the current fields/key. This is fail-closed: a decrypt error (e.g. a
+	// key that was retired too early) aborts the pass before anything on disk is
+	// mutated, so no data is lost.
+	resolved, err = c.reencryptForMigration(resolved)
+	if err != nil {
+		return fmt.Errorf("compactor: migrate: %w", err)
 	}
 
 	// --- Step 4: Write resolved entries into temp segment files (not yet renamed) ---
@@ -209,6 +223,96 @@ func (c *Collection) compact(force bool) error {
 	}
 
 	return nil
+}
+
+// MigrateNow brings every live record to the current encryption policy and purges
+// old-form bytes in one synchronous pass: it seals the active segment so its
+// records join the sealed set, then runs a forced re-encrypting compaction. On
+// return the collection has reached security completion for the current policy —
+// every live record is at the current epoch and no stale old-form bytes remain —
+// so an old key can be retired or a de-encrypted field indexed. It is a no-op for
+// a collection that is not encrypted. Requires every key still protecting on-disk
+// blobs to be resolvable via the provider; a missing key fails the pass without
+// mutating anything.
+func (c *Collection) MigrateNow(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if c.enc.Load() == nil {
+		return nil // nothing to migrate
+	}
+	if c.isClosed() {
+		return fmt.Errorf("compactor: collection %q is closed", c.name)
+	}
+	// Move any live records still in the active segment into the sealed set so the
+	// compaction pass rewrites them too. Skip an empty active to avoid churning an
+	// empty sealed segment.
+	c.mu.RLock()
+	activeHasData := c.active != nil && c.active.Size() > 0
+	c.mu.RUnlock()
+	if activeHasData {
+		if err := c.rotateSegment(); err != nil {
+			return fmt.Errorf("compactor: migrate rotate: %w", err)
+		}
+	}
+	if err := c.reapExpired(); err != nil {
+		return err
+	}
+	return c.compact(true)
+}
+
+// migrationPendingIn reports whether any live record located in one of segs was
+// written under an epoch older than the current policy epoch, i.e. the segment
+// holds records a re-encrypting pass would upgrade. It reads only the in-memory
+// index, so the compaction gate stays cheap.
+func (c *Collection) migrationPendingIn(segs []*Segment) bool {
+	enc := c.enc.Load()
+	if enc == nil {
+		return false
+	}
+	epoch := enc.epoch
+	paths := make(map[string]struct{}, len(segs))
+	for _, s := range segs {
+		paths[s.Path()] = struct{}{}
+	}
+	c.index.mu.RLock()
+	defer c.index.mu.RUnlock()
+	for _, e := range c.index.entries {
+		if e.Epoch != epoch {
+			if _, ok := paths[e.SegmentPath]; ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// reencryptForMigration rewrites each surviving entry that predates the current
+// policy epoch to the current write policy and key, stamping the current epoch. An
+// entry already at the current epoch is left untouched (its ciphertext already
+// conforms), so a steady-state compaction with no policy change re-encrypts
+// nothing. It is fail-closed: a decrypt failure is returned so the caller aborts
+// the pass rather than dropping or corrupting data.
+func (c *Collection) reencryptForMigration(entries []store.Entry) ([]store.Entry, error) {
+	enc := c.enc.Load()
+	if enc == nil {
+		return entries, nil
+	}
+	epoch := enc.epoch
+	ctx := context.Background()
+	for i := range entries {
+		e := &entries[i]
+		if e.Op == store.OpDelete || e.Epoch == epoch {
+			continue
+		}
+		stored, err := enc.reencrypt(ctx, e.Data)
+		if err != nil {
+			return nil, fmt.Errorf("id %d: %w", e.ID, err)
+		}
+		e.Data = stored
+		e.Epoch = epoch
+	}
+	return entries, nil
 }
 
 // isDirty returns true when the proportion of stale entries in the sealed
