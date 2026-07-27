@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/srjn45/scriva/crypto"
 )
 
 const metaFilename = "meta.json"
@@ -22,6 +24,31 @@ type collectionMeta struct {
 	// that simply inherit the server-wide default, so changing the global
 	// default still applies to them.
 	DefaultTTLSeconds int64 `json:"default_ttl_seconds,omitempty"`
+	// Encryption, when non-nil, records that this collection encrypts data at
+	// rest: the policy applied to writes, the key-derivation parameters (for the
+	// passphrase path), a key-check for fast wrong-key detection on open, and the
+	// id of the key new writes use. It carries no secret material. It is omitted
+	// for collections that are not encrypted.
+	Encryption *encryptionMeta `json:"encryption,omitempty"`
+}
+
+// encryptionMeta is the persisted "encryption" block of a collection's meta.json.
+// Everything in it is non-secret and safe to store in cleartext — it reveals
+// nothing without the key.
+type encryptionMeta struct {
+	Policy       EncryptionPolicy `json:"policy"`
+	KDF          *EncryptionKDF   `json:"kdf,omitempty"`
+	KeyCheck     string           `json:"key_check"`
+	CurrentKeyID string           `json:"current_key_id"`
+}
+
+// EncryptionKDF records the key-derivation parameters for a passphrase-derived
+// key so the same key can be re-derived on reopen. The salt and parameters are
+// non-secret. It is nil when the key is supplied directly (raw-key provider).
+type EncryptionKDF struct {
+	Algo   string           `json:"algo"`   // e.g. "argon2id"
+	Salt   string           `json:"salt"`   // base64-encoded
+	Params crypto.KDFParams `json:"params"` // cost parameters
 }
 
 // loadMeta reads and parses the meta.json file at path.

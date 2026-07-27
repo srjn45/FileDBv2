@@ -120,17 +120,36 @@ func (c *Collection) ScanStream(ctx context.Context, opts ScanOptions, yield fun
 	}
 
 	// counting wraps the caller's yield so every successfully emitted record is
-	// tallied once, regardless of ordered/unordered path. Field projection is
-	// applied here — after filtering and ordering — so it narrows only what
-	// reaches the caller (and thus the wire) without affecting order-by.
+	// tallied once, regardless of ordered/unordered path. Projection and — for an
+	// encrypted collection — decryption are applied here, after filtering and
+	// ordering, so the plaintext of an encrypted field never participates in a
+	// query and only the fields actually returned are decrypted (lazy decrypt).
 	stats := &ScanStats{}
 	counting := func(r ScanResult) error {
-		r.Data = ProjectData(r.Data, opts.Fields)
+		out, err := c.finalizeRecord(ctx, r.Data, opts.Fields)
+		if err != nil {
+			return err
+		}
+		r.Data = out
 		if err := yield(r); err != nil {
 			return err
 		}
 		stats.RowsReturned++
 		return nil
+	}
+
+	// Reject a sort on an encrypted field at planning time — the stored form is
+	// opaque, so it cannot be ordered. Filters are validated in forEachMatch,
+	// which every scan/count/aggregate funnels through.
+	if c.enc != nil {
+		for _, sf := range opts.Sort {
+			if err := c.enc.checkField(sf.Field); err != nil {
+				return *stats, err
+			}
+		}
+		if err := c.enc.checkField(opts.OrderBy); err != nil {
+			return *stats, err
+		}
 	}
 
 	// Resolve the effective ordering: an explicit multi-field Sort wins; otherwise
@@ -267,6 +286,14 @@ func (c *Collection) scanOrdered(ctx context.Context, f query.Filter, opts ScanO
 // primary index to skip stale (overwritten or deleted) versions without
 // materialising the whole collection.
 func (c *Collection) forEachMatch(ctx context.Context, f query.Filter, stats *ScanStats, visit func(ScanResult) error) error {
+	// Reject any predicate on an encrypted field before scanning. This is the one
+	// choke point every scan, Count, and Aggregate funnels through, so validating
+	// here covers them all.
+	if c.enc != nil {
+		if err := c.enc.checkFilterFields(f); err != nil {
+			return err
+		}
+	}
 	if ids, hit := c.indexCandidates(f); hit {
 		stats.IndexUsed = true
 		return c.visitCandidates(ctx, f, ids, stats, visit)
@@ -301,15 +328,19 @@ func (c *Collection) visitCandidates(ctx context.Context, f query.Filter, ids []
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		rec, err := c.Get(id)
+		// Read the stored (undecrypted) form and match on it: the filter only ever
+		// references plaintext fields (encrypted fields are rejected at planning),
+		// which are identical in the stored form, and deferring decryption to the
+		// yield boundary keeps it to a single pass — matching streamLive.
+		e, loc, err := c.getStored(id)
 		if err != nil {
 			continue // deleted since the index was consulted
 		}
 		stats.RowsScanned++ // a live candidate examined against the filter
-		if !f.Match(rec.Data) {
+		if !f.Match(e.Data) {
 			continue
 		}
-		if err := visit(ScanResult{ID: id, Rev: rec.Rev, Data: rec.Data, Ts: rec.Ts}); err != nil {
+		if err := visit(ScanResult{ID: id, Rev: loc.Rev, Data: e.Data, Ts: e.Ts}); err != nil {
 			return err
 		}
 	}
@@ -396,6 +427,18 @@ func ProjectData(data map[string]any, fields []string) map[string]any {
 		out[KeyField] = v
 	}
 	return out
+}
+
+// finalizeRecord applies projection — and, for an encrypted collection,
+// decryption — to a stored record immediately before it is yielded. For a
+// plaintext collection it is exactly ProjectData. For an encrypted one it
+// decrypts only the fields that survive projection (lazy decrypt) and is
+// fail-closed: a decrypt error is propagated, never turned into a partial result.
+func (c *Collection) finalizeRecord(ctx context.Context, stored map[string]any, fields []string) (map[string]any, error) {
+	if c.enc == nil {
+		return ProjectData(stored, fields), nil
+	}
+	return c.enc.materialize(ctx, stored, fields)
 }
 
 // sortLess returns a total ordering over ScanResults for a multi-field sort. Each

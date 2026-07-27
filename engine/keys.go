@@ -156,6 +156,11 @@ func (c *Collection) Upsert(key string, data map[string]any) (Record, error) {
 		c.mu.Unlock()
 		return Record{}, err
 	}
+	// Seal encrypted fields into the stored form before appending.
+	if err := c.sealEntryData(&e); err != nil {
+		c.mu.Unlock()
+		return Record{}, err
+	}
 	offset, err := c.active.Append(e)
 	if err != nil {
 		c.mu.Unlock()

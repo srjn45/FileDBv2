@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/srjn45/scriva/crypto"
 	"github.com/srjn45/scriva/query"
 	"github.com/srjn45/scriva/store"
 )
@@ -114,6 +115,24 @@ type CollectionConfig struct {
 	// stay unlimited. The embedded façade sets MaxRecords/MaxBytes directly and
 	// leaves this nil.
 	Quotas map[string]Quota
+
+	// Encryption, when non-nil, enables transparent at-rest encryption for this
+	// collection under the given policy. The policy is applied on first open and
+	// persisted in meta.json; reopening an already-encrypted collection reloads
+	// the policy from meta.json and only needs KeyProvider. DB-wide callers leave
+	// this nil on the default config and set it per collection (via
+	// CollectionWithConfig), since policies differ between collections.
+	Encryption *EncryptionPolicy
+	// KeyProvider supplies encryption keys and is DB-wide (one keyring protects
+	// every collection). It is required whenever a collection is or becomes
+	// encrypted; opening an encrypted collection without one fails fast. nil means
+	// no encryption for a fresh collection.
+	KeyProvider crypto.KeyProvider
+	// EncryptionKDF, when set, records the passphrase key-derivation parameters
+	// (algorithm, salt, cost) to persist in meta.json so a passphrase-derived key
+	// can be re-derived on reopen. It is round-tripped opaquely by the engine; the
+	// façade populates it. nil for raw-key providers.
+	EncryptionKDF *EncryptionKDF
 }
 
 // Quota is a single collection's write-path resource budget. A zero field means
@@ -170,6 +189,14 @@ type Collection struct {
 	// Secondary indexes: field name → index.
 	sidxMu  sync.RWMutex
 	sidxMap map[string]*SecondaryIndex
+
+	// enc, when non-nil, encrypts on the write path and decrypts on the read
+	// boundary. It is the only component that touches key material; the segments,
+	// index, compactor, and replication feed all stay key-oblivious because the
+	// stored data map holds ciphertext. encMeta is the persisted encryption block
+	// mirrored onto every meta.json snapshot so no write path drops it.
+	enc     *encryptor
+	encMeta *encryptionMeta
 
 	// broker, when non-nil, is the DB-level replication feed. Committed entries
 	// are published to it (under c.mu, in commit order) so followers can tail
@@ -239,6 +266,13 @@ func OpenCollection(name, dataDir string, cfg CollectionConfig) (*Collection, er
 	}
 
 	if err := c.load(); err != nil {
+		return nil, err
+	}
+
+	// Initialise encryption after load: verify the key against the persisted
+	// key-check for an already-encrypted collection, or enable and persist a new
+	// policy. A wrong key/passphrase fails fast here rather than on first read.
+	if err := c.initEncryption(cfg); err != nil {
 		return nil, err
 	}
 
@@ -479,6 +513,12 @@ func (c *Collection) insert(data map[string]any, expiresAt int64) (uint64, time.
 	e.Rev = 1 // a fresh record starts at revision 1
 	e.ExpiresAt = expiresAt
 
+	// Seal encrypted fields into the stored form before measuring quota (so the
+	// budget reflects the on-disk ciphertext) and before any append.
+	if err := c.sealEntryData(&e); err != nil {
+		return 0, time.Time{}, err
+	}
+
 	qBytes := c.entryQuotaBytes(e)
 
 	c.mu.Lock()
@@ -555,6 +595,12 @@ func (c *Collection) InsertMany(records []map[string]any, expiresAt time.Time) (
 		e.Ts = ts
 		e.Rev = 1
 		e.ExpiresAt = exp
+		// Seal before tallying quota bytes so the budget reflects the ciphertext,
+		// and before any append so a reserved-marker collision rejects the batch
+		// with nothing written.
+		if err := c.sealEntryData(&e); err != nil {
+			return nil, time.Time{}, err
+		}
 		ids[i] = id
 		entries[i] = e
 		ops[i] = txOp{kind: txOpInsert, id: id, data: d, ts: ts}
@@ -634,6 +680,12 @@ func (c *Collection) update(id uint64, data map[string]any, expiresAt int64, kee
 	ts := time.Now().UTC()
 	e := store.NewUpdate(id, data)
 	e.Ts = ts
+
+	// Seal encrypted fields before the lock; the stored form depends only on the
+	// data, not on the revision/expiry stamped under the lock below.
+	if err := c.sealEntryData(&e); err != nil {
+		return time.Time{}, err
+	}
 
 	c.mu.Lock()
 	cur, ok := c.index.Get(id)
@@ -717,32 +769,55 @@ type Record struct {
 	Data map[string]any
 }
 
-// Get returns the fully-resolved record for id, including its current revision.
-func (c *Collection) Get(id uint64) (Record, error) {
+// getStored returns the raw stored (possibly ciphertext) entry for id together
+// with its index entry, applying the same not-found and TTL-expiry rules as Get
+// but without decrypting. Get decrypts on top of this, and the scan paths use it
+// directly so the single decrypt happens once at the yield boundary.
+func (c *Collection) getStored(id uint64) (store.Entry, IndexEntry, error) {
 	c.mu.RLock()
 	loc, ok := c.index.Get(id)
 	c.mu.RUnlock()
 
 	if !ok {
-		return Record{}, fmt.Errorf("collection: get: id %d not found", id)
+		return store.Entry{}, IndexEntry{}, fmt.Errorf("collection: get: id %d not found", id)
 	}
 	// Defensively hide records whose TTL has passed but which the reaper has not
 	// yet reclaimed, so an expired record is never observable.
 	if c.isExpired(loc) {
-		return Record{}, fmt.Errorf("collection: get: id %d not found", id)
+		return store.Entry{}, IndexEntry{}, fmt.Errorf("collection: get: id %d not found", id)
 	}
 
 	seg := c.segmentByPath(loc.SegmentPath)
 	if seg == nil {
-		return Record{}, fmt.Errorf("collection: get: segment not found for id %d", id)
+		return store.Entry{}, IndexEntry{}, fmt.Errorf("collection: get: segment not found for id %d", id)
 	}
 
 	e, err := seg.ReadAt(loc.Offset)
 	if err != nil {
-		return Record{}, fmt.Errorf("collection: get: %w", err)
+		return store.Entry{}, IndexEntry{}, fmt.Errorf("collection: get: %w", err)
 	}
-	key, _ := e.Data[KeyField].(string)
-	return Record{ID: id, Key: key, Rev: loc.Rev, Ts: e.Ts, Data: e.Data}, nil
+	return e, loc, nil
+}
+
+// Get returns the fully-resolved record for id, including its current revision.
+// Encrypted fields are decrypted before the record is returned; a wrong or
+// missing key surfaces as a typed error (crypto.ErrDecryptFailed /
+// crypto.ErrKeyUnavailable) rather than garbage.
+func (c *Collection) Get(id uint64) (Record, error) {
+	e, loc, err := c.getStored(id)
+	if err != nil {
+		return Record{}, err
+	}
+	data := e.Data
+	if c.enc != nil {
+		dec, derr := c.enc.materialize(context.Background(), e.Data, nil)
+		if derr != nil {
+			return Record{}, derr
+		}
+		data = dec
+	}
+	key, _ := data[KeyField].(string)
+	return Record{ID: id, Key: key, Rev: loc.Rev, Ts: e.Ts, Data: data}, nil
 }
 
 // GetByKey returns the fully-resolved record carrying the caller-supplied string
@@ -995,15 +1070,35 @@ func (c *Collection) CommitTx(ops []txOp) error {
 		}
 	}
 
+	// Seal encrypted fields for every insert/update op up front, before any
+	// append, so a reserved-marker collision aborts the whole commit with nothing
+	// written. The plaintext op.data is still used for secondary indexes and watch
+	// events below.
+	sealed := make([]map[string]any, len(ops))
+	for i, op := range ops {
+		if op.kind != txOpInsert && op.kind != txOpUpdate {
+			continue
+		}
+		sealed[i] = op.data
+		if c.enc != nil {
+			sd, err := c.enc.encrypt(op.data)
+			if err != nil {
+				c.mu.Unlock()
+				return err
+			}
+			sealed[i] = sd
+		}
+	}
+
 	// Apply all ops sequentially.
 	var events []WatchEvent
 	var committed []store.Entry
 	var maxInsertID uint64
 
-	for _, op := range ops {
+	for i, op := range ops {
 		switch op.kind {
 		case txOpInsert:
-			e := store.NewInsert(op.id, op.data)
+			e := store.NewInsert(op.id, sealed[i])
 			e.Ts = op.ts
 			e.Rev = 1 // a fresh record starts at revision 1
 			exp := c.resolveInsertExpiry(time.Time{})
@@ -1022,7 +1117,7 @@ func (c *Collection) CommitTx(ops []txOp) error {
 			events = append(events, WatchEvent{Op: store.OpInsert, ID: op.id, Data: op.data, Ts: op.ts})
 
 		case txOpUpdate:
-			e := store.NewUpdate(op.id, op.data)
+			e := store.NewUpdate(op.id, sealed[i])
 			e.Ts = op.ts
 			// Bump the revision off the record's current index entry. A prior op
 			// in this same batch may already have updated it (index.Set below runs
@@ -1242,6 +1337,11 @@ func (c *Collection) EnsureUniqueIndex(field string) error {
 
 // ensureIndex creates a secondary index on field if one does not already exist.
 func (c *Collection) ensureIndex(field string, unique bool) error {
+	// An encrypted field is opaque on disk, so indexing it would either leak its
+	// plaintext into sidx_<field>.json or index ciphertext — reject it.
+	if c.enc != nil && c.enc.isEncryptedField(field) {
+		return fmt.Errorf("%w: cannot index encrypted field %q", crypto.ErrFieldEncrypted, field)
+	}
 	c.sidxMu.Lock()
 	if _, exists := c.sidxMap[field]; exists {
 		c.sidxMu.Unlock()
@@ -1386,7 +1486,19 @@ func (c *Collection) compareAndSwap(key string, data map[string]any, ok func(cur
 		return false, fmt.Errorf("collection: cas: %w", err)
 	}
 
-	if !ok(curEntry.Data, loc.Rev) {
+	// The predicate operates on the logical (plaintext) record, so decrypt the
+	// stored form before evaluating it.
+	curData := curEntry.Data
+	if c.enc != nil {
+		dec, derr := c.enc.materialize(context.Background(), curEntry.Data, nil)
+		if derr != nil {
+			c.mu.Unlock()
+			return false, derr
+		}
+		curData = dec
+	}
+
+	if !ok(curData, loc.Rev) {
 		c.mu.Unlock()
 		return false, nil // stale rev / false predicate → clean no-op
 	}
@@ -1401,6 +1513,11 @@ func (c *Collection) compareAndSwap(key string, data map[string]any, ok func(cur
 	e.ExpiresAt = loc.ExpiresAt
 
 	if err := c.sidxCheckUnique(id, stamped); err != nil {
+		c.mu.Unlock()
+		return false, err
+	}
+	// Seal encrypted fields into the stored form before appending.
+	if err := c.sealEntryData(&e); err != nil {
 		c.mu.Unlock()
 		return false, err
 	}
