@@ -40,6 +40,14 @@ type Entry struct {
 	// decode as rev 0 — fully backward compatible.
 	Rev  uint64         `json:"rev,omitempty"`
 	Data map[string]any `json:"data,omitempty"` // nil for OpDelete
+	// Epoch is the encryption-policy epoch the record's data was written under: a
+	// counter bumped on each policy change (field add/remove, key rotation,
+	// enable/disable). It lets migration completeness be judged without reading
+	// segments — the in-memory index mirrors it — and lets compaction skip entries
+	// already conforming to the current policy. It is omitted when zero, so segment
+	// lines written before encryption existed (or by unencrypted collections) decode
+	// as epoch 0 — fully backward compatible.
+	Epoch uint64 `json:"epoch,omitempty"`
 	// ExpiresAt is the record's optional time-to-live deadline, as a Unix
 	// nanosecond timestamp (0 = never expires). When non-zero, the record is
 	// invisible to reads at or after this instant and is reclaimed by compaction.
@@ -56,12 +64,12 @@ type Entry struct {
 	CRC *uint32 `json:"crc,omitempty"`
 }
 
-// checksum computes the CRC32C over the entry's id, op, rev, expiry, and
+// checksum computes the CRC32C over the entry's id, op, rev, expiry, epoch, and
 // canonical data. The timestamp and the crc field itself are excluded so the
-// value is stable across encode/decode round-trips. Rev and expiry bytes are
-// folded in only when non-zero, so a legacy line (rev 0, no expiry, written
-// before those fields existed) hashes exactly as it did originally and its
-// stored crc still verifies. Data is canonicalised via json.Marshal, which
+// value is stable across encode/decode round-trips. Rev, expiry, and epoch bytes
+// are folded in only when non-zero, so a legacy line (rev 0, no expiry, epoch 0,
+// written before those fields existed) hashes exactly as it did originally and
+// its stored crc still verifies. Data is canonicalised via json.Marshal, which
 // sorts map keys deterministically.
 func checksum(e Entry) (uint32, error) {
 	h := crc32.New(crc32cTable)
@@ -78,6 +86,11 @@ func checksum(e Entry) (uint32, error) {
 		var expbuf [8]byte
 		binary.LittleEndian.PutUint64(expbuf[:], uint64(e.ExpiresAt))
 		_, _ = h.Write(expbuf[:])
+	}
+	if e.Epoch != 0 {
+		var epbuf [8]byte
+		binary.LittleEndian.PutUint64(epbuf[:], e.Epoch)
+		_, _ = h.Write(epbuf[:])
 	}
 	if e.Data != nil {
 		b, err := json.Marshal(e.Data)

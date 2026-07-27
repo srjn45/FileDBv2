@@ -45,7 +45,8 @@ type EncryptionPolicy struct {
 // validate rejects a policy that cannot be applied safely: an unknown mode, an
 // empty field-level deny-list, or a reserved field (_key, secure_data) named as
 // encryptable. The reserved _key must stay plaintext because keyed CRUD depends
-// on it (see keys.go).
+// on it (see keys.go). The empty ("") mode is not valid here — disabling
+// encryption is expressed by SetEncryptionPolicy, not by an EncryptionPolicy value.
 func (p EncryptionPolicy) validate() error {
 	switch p.Mode {
 	case EncryptModeFields:
@@ -73,28 +74,57 @@ func (p EncryptionPolicy) validate() error {
 	}
 }
 
-// encryptor applies a collection's EncryptionPolicy at the read/write boundary.
+// encryptor applies a collection's encryption policy at the read/write boundary.
 // It is the only engine component that touches key material; everything
 // downstream (segments, compaction, index, replication) stays key-oblivious
 // because the stored data map holds ciphertext.
+//
+// An encryptor is immutable once constructed: a policy change builds a fresh one
+// and the collection atomically swaps it in, so lock-free readers always see a
+// consistent snapshot. It deliberately separates two concerns:
+//
+//   - readMode is fixed for the life of the collection (set when encryption is
+//     first enabled) and drives how stored records are reconstructed. Because it
+//     never changes, older records written under an earlier write policy — or
+//     residual ciphertext left after encryption is disabled — always decode
+//     correctly.
+//   - writePolicy governs only what new writes seal. A zero Mode means writes are
+//     not sealed (encryption disabled) while reads still reconstruct any residual
+//     ciphertext under readMode.
 type encryptor struct {
-	collection string
-	policy     EncryptionPolicy
-	keys       crypto.KeyProvider
-	fieldSet   map[string]struct{} // fields mode: fields to encrypt
-	indexSet   map[string]struct{} // record mode: plaintext allow-list
+	collection  string
+	readMode    EncryptionMode // fixed reconstruction mode
+	writePolicy EncryptionPolicy
+	keys        crypto.KeyProvider
+	fieldSet    map[string]struct{} // fields write-mode: fields to encrypt
+	indexSet    map[string]struct{} // record write-mode: plaintext allow-list
+	epoch       uint64              // policy epoch stamped onto writes
 }
 
-func newEncryptor(collection string, p EncryptionPolicy, keys crypto.KeyProvider) *encryptor {
-	e := &encryptor{collection: collection, policy: p, keys: keys}
-	switch p.Mode {
+// newEncryptor builds an immutable encryptor. readMode fixes reconstruction;
+// writePolicy (whose Mode may be "" to disable sealing) fixes what new writes
+// seal; epoch is stamped onto every sealed entry.
+func newEncryptor(collection string, readMode EncryptionMode, writePolicy EncryptionPolicy, keys crypto.KeyProvider, epoch uint64) *encryptor {
+	e := &encryptor{
+		collection:  collection,
+		readMode:    readMode,
+		writePolicy: writePolicy,
+		keys:        keys,
+		epoch:       epoch,
+	}
+	switch writePolicy.Mode {
 	case EncryptModeFields:
-		e.fieldSet = toSet(p.Fields)
+		e.fieldSet = toSet(writePolicy.Fields)
 	case EncryptModeRecord:
-		e.indexSet = toSet(p.IndexFields)
+		e.indexSet = toSet(writePolicy.IndexFields)
 	}
 	return e
 }
+
+// enabled reports whether new writes are sealed under this encryptor. When false
+// (encryption disabled), writes pass through as plaintext but reads still
+// reconstruct any residual ciphertext under readMode.
+func (e *encryptor) enabled() bool { return e.writePolicy.Mode != "" }
 
 func toSet(fields []string) map[string]struct{} {
 	s := make(map[string]struct{}, len(fields))
@@ -114,9 +144,10 @@ func (e *encryptor) aad(field string) []byte {
 }
 
 // encrypt transforms a plaintext record into its stored (ciphertext) form under
-// the policy. It first rejects any caller value that collides with the reserved
-// marker so the marker stays an infallible read discriminator, and reserves the
-// secure_data field in record mode. The input map is never mutated.
+// the write policy. It first rejects any caller value that collides with the
+// reserved marker so the marker stays an infallible read discriminator, then —
+// when encryption is disabled — returns the data unchanged. In record mode it
+// reserves the secure_data field. The input map is never mutated.
 func (e *encryptor) encrypt(data map[string]any) (map[string]any, error) {
 	for _, v := range data {
 		if s, ok := v.(string); ok && crypto.HasReservedPrefix(s) {
@@ -124,12 +155,22 @@ func (e *encryptor) encrypt(data map[string]any) (map[string]any, error) {
 		}
 	}
 
+	if !e.enabled() {
+		// Disabled: writes are plaintext. A defensive copy keeps the no-mutation
+		// contract (callers may reuse the input map).
+		out := make(map[string]any, len(data))
+		for f, v := range data {
+			out[f] = v
+		}
+		return out, nil
+	}
+
 	keyID, key, err := e.keys.Current(context.Background())
 	if err != nil {
 		return nil, fmt.Errorf("engine: encrypt %q: %w", e.collection, err)
 	}
 
-	switch e.policy.Mode {
+	switch e.writePolicy.Mode {
 	case EncryptModeFields:
 		out := make(map[string]any, len(data))
 		for f, v := range data {
@@ -190,13 +231,31 @@ func (e *encryptor) seal(key []byte, keyID, field string, v any) (string, error)
 	return env, nil
 }
 
+// reencrypt brings a stored record to the current policy: it decrypts the record
+// in full (under the fixed readMode, so any earlier-policy or old-key ciphertext
+// is understood) and re-seals it under the current write policy. When encryption
+// is disabled the re-seal is a plaintext pass-through, so a de-encrypting
+// migration rewrites blobs back to plaintext. It is fail-closed: a decrypt error
+// (e.g. a retired key) is propagated so the caller can abort rather than lose
+// data. Used by the re-encrypting compaction pass.
+func (e *encryptor) reencrypt(ctx context.Context, stored map[string]any) (map[string]any, error) {
+	pt, err := e.materialize(ctx, stored, nil)
+	if err != nil {
+		return nil, err
+	}
+	return e.encrypt(pt)
+}
+
 // materialize returns the plaintext record limited to fields (empty = the full
 // record), decrypting only the blobs required to produce those fields. It is
-// fail-closed: a decrypt error (crypto.ErrKeyUnavailable / crypto.ErrDecryptFailed)
-// is propagated with collection/field context, never swallowed or partially
-// returned. The stored map is never mutated.
+// policy-independent: reconstruction is driven by the fixed readMode and the
+// per-value marker, never by the current write policy, so records written under
+// any earlier policy still decode. It is fail-closed: a decrypt error
+// (crypto.ErrKeyUnavailable / crypto.ErrDecryptFailed) is propagated with
+// collection/field context, never swallowed or partially returned. The stored map
+// is never mutated.
 func (e *encryptor) materialize(ctx context.Context, stored map[string]any, fields []string) (map[string]any, error) {
-	if e.policy.Mode == EncryptModeRecord {
+	if e.readMode == EncryptModeRecord {
 		return e.materializeRecord(ctx, stored, fields)
 	}
 	return e.materializeFields(ctx, stored, fields)
@@ -237,7 +296,7 @@ func (e *encryptor) materializeFields(ctx context.Context, stored map[string]any
 }
 
 func (e *encryptor) materializeRecord(ctx context.Context, stored map[string]any, fields []string) (map[string]any, error) {
-	// Full record: copy the plaintext index fields, then decrypt and merge the blob.
+	// Full record: copy the plaintext columns, then decrypt and merge the blob.
 	if len(fields) == 0 {
 		out := make(map[string]any, len(stored))
 		for f, v := range stored {
@@ -255,19 +314,20 @@ func (e *encryptor) materializeRecord(ctx context.Context, stored map[string]any
 		}
 		return out, nil
 	}
-	// Projection: take index fields (and _key) from the stored form directly; only
-	// touch the blob when a requested field lives inside it, so a projection over
-	// index columns alone needs no key.
+	// Projection: take a requested field from the stored plaintext column when it
+	// is present there (an index column — old or new — or _key), and only touch the
+	// blob for fields not found as columns. This keeps the lazy-decrypt property
+	// (a projection over columns alone needs no key) while staying correct across a
+	// half-migrated index-field change, where the same field lives in the blob for
+	// old records and as a plaintext column for new ones.
 	out := make(map[string]any, len(fields)+1)
 	needBlob := false
 	for _, f := range fields {
 		if f == KeyField {
 			continue // retained below
 		}
-		if _, ok := e.indexSet[f]; ok {
-			if v, ok := stored[f]; ok {
-				out[f] = v
-			}
+		if v, ok := stored[f]; ok && f != secureDataField {
+			out[f] = v
 			continue
 		}
 		needBlob = true
@@ -284,7 +344,7 @@ func (e *encryptor) materializeRecord(ctx context.Context, stored map[string]any
 			if f == KeyField {
 				continue
 			}
-			if _, isIndex := e.indexSet[f]; isIndex {
+			if _, done := out[f]; done {
 				continue
 			}
 			if v, ok := merged[f]; ok {
@@ -316,8 +376,8 @@ func (e *encryptor) maybeDecryptValue(ctx context.Context, field string, v any) 
 
 // decryptBlob decrypts the record-level secure_data blob into its field map. A
 // blob that is absent or not a marker string (a legacy plaintext record that
-// predates record mode) yields an empty map, so such records read through
-// unchanged.
+// predates record mode, or a de-encrypted record) yields an empty map, so such
+// records read through unchanged.
 func (e *encryptor) decryptBlob(ctx context.Context, blob any) (map[string]any, error) {
 	s, ok := blob.(string)
 	if !ok || !crypto.IsEncrypted(s) {
@@ -338,12 +398,14 @@ func (e *encryptor) wrap(field string, err error) error {
 	return fmt.Errorf("engine: decrypt %s.%s: %w", e.collection, field, err)
 }
 
-// isEncryptedField reports whether field is opaque on disk under the policy, and
-// therefore cannot be indexed, filtered, sorted, or aggregated. In field mode
-// that is exactly the deny-list; in record mode it is every field except the
-// plaintext index allow-list and the reserved _key.
+// isEncryptedField reports whether field is opaque on disk under the current
+// write policy, and therefore cannot be indexed, filtered, sorted, or aggregated.
+// It follows the write policy (not readMode): once encryption is disabled nothing
+// is opaque to new queries — though residual ciphertext may remain on disk until a
+// migration pass completes, which is why queries newly enabled on a de-encrypted
+// field are gated on security completion (see MigrationStatus).
 func (e *encryptor) isEncryptedField(field string) bool {
-	switch e.policy.Mode {
+	switch e.writePolicy.Mode {
 	case EncryptModeFields:
 		_, ok := e.fieldSet[field]
 		return ok
@@ -406,11 +468,15 @@ func (e *encryptor) encryptedFilterField(f query.Filter) (string, bool) {
 
 // initEncryption wires up the collection's encryptor after load(). For an
 // already-encrypted collection it verifies the supplied key against the
-// persisted key-check (fail-fast wrong-key detection) and loads the policy from
-// meta.json. For a collection that config asks to encrypt for the first time, it
-// validates and persists the policy plus a fresh key-check. A collection that is
-// neither encrypted on disk nor asked to be stays plaintext.
+// persisted key-check (fail-fast wrong-key detection) and loads the policy, read
+// mode, and epoch from meta.json. For a collection that config asks to encrypt
+// for the first time, it validates and persists the policy plus a fresh key-check
+// at epoch 1. A collection that is neither encrypted on disk nor asked to be stays
+// plaintext, but retains the key provider (if any) so encryption can be enabled
+// later via SetEncryptionPolicy.
 func (c *Collection) initEncryption(cfg CollectionConfig) error {
+	c.keyProvider = cfg.KeyProvider
+
 	m, err := loadMeta(metaPath(c.dir))
 	if err != nil {
 		// A missing/corrupt meta.json means nothing is persisted yet; treat it as
@@ -431,8 +497,8 @@ func (c *Collection) initEncryption(cfg CollectionConfig) error {
 		if err := crypto.VerifyKeyCheck(key, m.Encryption.KeyCheck); err != nil {
 			return fmt.Errorf("engine: open collection %q: %w", c.name, err)
 		}
-		c.encMeta = m.Encryption
-		c.enc = newEncryptor(c.name, m.Encryption.Policy, cfg.KeyProvider)
+		c.encMeta.Store(m.Encryption)
+		c.enc.Store(newEncryptor(c.name, m.Encryption.readMode(), m.Encryption.Policy, cfg.KeyProvider, m.Encryption.Epoch))
 		return nil
 
 	case cfg.Encryption != nil:
@@ -451,13 +517,15 @@ func (c *Collection) initEncryption(cfg CollectionConfig) error {
 		if err != nil {
 			return fmt.Errorf("engine: enable encryption on %q: %w", c.name, err)
 		}
-		c.encMeta = &encryptionMeta{
+		c.encMeta.Store(&encryptionMeta{
 			Policy:       *cfg.Encryption,
+			ReadMode:     cfg.Encryption.Mode,
+			Epoch:        1,
 			KDF:          cfg.EncryptionKDF,
 			KeyCheck:     kc,
 			CurrentKeyID: keyID,
-		}
-		c.enc = newEncryptor(c.name, *cfg.Encryption, cfg.KeyProvider)
+		})
+		c.enc.Store(newEncryptor(c.name, cfg.Encryption.Mode, *cfg.Encryption, cfg.KeyProvider, 1))
 		// Persist the encryption block immediately so a crash right after enabling
 		// still records the policy and key-check.
 		if err := persistMeta(metaPath(c.dir), c.metaSnapshot()); err != nil {
@@ -466,22 +534,26 @@ func (c *Collection) initEncryption(cfg CollectionConfig) error {
 		return nil
 
 	default:
-		return nil // no encryption
+		return nil // no encryption yet (may be enabled later via SetEncryptionPolicy)
 	}
 }
 
 // sealEntryData replaces e.Data with its stored (ciphertext) form under the
-// collection's policy, validating that no caller value collides with the
-// reserved marker. It is a no-op when encryption is disabled. Callers invoke it
-// before appending so nothing is written if sealing fails.
+// collection's current write policy and stamps the current policy epoch onto the
+// entry, validating that no caller value collides with the reserved marker. It is
+// a no-op when the collection has never been encryption-configured. Callers invoke
+// it before appending so nothing is written if sealing fails, and so the stamped
+// epoch and the sealed bytes are always consistent.
 func (c *Collection) sealEntryData(e *store.Entry) error {
-	if c.enc == nil {
+	enc := c.enc.Load()
+	if enc == nil {
 		return nil
 	}
-	stored, err := c.enc.encrypt(e.Data)
+	stored, err := enc.encrypt(e.Data)
 	if err != nil {
 		return err
 	}
 	e.Data = stored
+	e.Epoch = enc.epoch
 	return nil
 }

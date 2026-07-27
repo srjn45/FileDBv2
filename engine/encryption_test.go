@@ -525,7 +525,7 @@ func TestSecureDataFieldReserved(t *testing.T) {
 func TestMaterializeKeyUnavailable(t *testing.T) {
 	policy := EncryptionPolicy{Mode: EncryptModeFields, Fields: []string{"pw"}}
 	krA, _ := crypto.NewKeyring("k1", mustKey(t))
-	encA := newEncryptor("users", policy, krA)
+	encA := newEncryptor("users", policy.Mode, policy, krA, 1)
 	stored, err := encA.encrypt(map[string]any{"pw": "secret"})
 	if err != nil {
 		t.Fatal(err)
@@ -533,7 +533,7 @@ func TestMaterializeKeyUnavailable(t *testing.T) {
 
 	// A keyring that does not contain k1.
 	krB, _ := crypto.NewKeyring("k2", mustKey(t))
-	encB := newEncryptor("users", policy, krB)
+	encB := newEncryptor("users", policy.Mode, policy, krB, 1)
 	if _, err := encB.materialize(context.Background(), stored, nil); !errors.Is(err, crypto.ErrKeyUnavailable) {
 		t.Fatalf("materialize with missing key: got %v, want ErrKeyUnavailable", err)
 	}
@@ -543,7 +543,7 @@ func TestMaterializeKeyUnavailable(t *testing.T) {
 func TestMaterializeTamperFailsClosed(t *testing.T) {
 	policy := EncryptionPolicy{Mode: EncryptModeFields, Fields: []string{"pw"}}
 	kr, _ := crypto.NewKeyring("k1", mustKey(t))
-	enc := newEncryptor("users", policy, kr)
+	enc := newEncryptor("users", policy.Mode, policy, kr, 1)
 	stored, err := enc.encrypt(map[string]any{"pw": "secret"})
 	if err != nil {
 		t.Fatal(err)

@@ -190,13 +190,22 @@ type Collection struct {
 	sidxMu  sync.RWMutex
 	sidxMap map[string]*SecondaryIndex
 
-	// enc, when non-nil, encrypts on the write path and decrypts on the read
-	// boundary. It is the only component that touches key material; the segments,
-	// index, compactor, and replication feed all stay key-oblivious because the
-	// stored data map holds ciphertext. encMeta is the persisted encryption block
-	// mirrored onto every meta.json snapshot so no write path drops it.
-	enc     *encryptor
-	encMeta *encryptionMeta
+	// enc, when its loaded value is non-nil, encrypts on the write path and
+	// decrypts on the read boundary. It is the only component that touches key
+	// material; the segments, index, compactor, and replication feed all stay
+	// key-oblivious because the stored data map holds ciphertext. The encryptor is
+	// immutable once built; a policy change (SetEncryptionPolicy / RotateKey) builds
+	// a fresh one and atomically swaps it in, so lock-free readers (Get, scans)
+	// always observe a consistent snapshot. encMeta is the persisted encryption
+	// block mirrored onto every meta.json snapshot so no write path drops it; it is
+	// guarded by c.mu. keyProvider is retained so a policy change can re-resolve the
+	// current key without reopening.
+	enc         atomic.Pointer[encryptor]
+	encMeta     atomic.Pointer[encryptionMeta]
+	keyProvider crypto.KeyProvider
+	// encAdminMu serializes policy changes (SetEncryptionPolicy, RotateKey) so two
+	// concurrent admin calls cannot interleave their read-modify-write of the epoch.
+	encAdminMu sync.Mutex
 
 	// broker, when non-nil, is the DB-level replication feed. Committed entries
 	// are published to it (under c.mu, in commit order) so followers can tail
@@ -539,7 +548,7 @@ func (c *Collection) insert(data map[string]any, expiresAt int64) (uint64, time.
 		c.mu.Unlock()
 		return 0, time.Time{}, fmt.Errorf("collection: insert: %w", err)
 	}
-	c.index.Set(id, IndexEntry{SegmentPath: c.active.Path(), Offset: offset, Rev: 1, ExpiresAt: expiresAt})
+	c.index.Set(id, IndexEntry{SegmentPath: c.active.Path(), Offset: offset, Rev: 1, ExpiresAt: expiresAt, Epoch: e.Epoch})
 	c.sidxIndexEntry(id, data)
 	if err := c.syncActiveLocked(); err != nil {
 		c.mu.Unlock()
@@ -625,7 +634,7 @@ func (c *Collection) InsertMany(records []map[string]any, expiresAt time.Time) (
 			c.mu.Unlock()
 			return nil, time.Time{}, fmt.Errorf("collection: insertMany: %w", err)
 		}
-		c.index.Set(ids[i], IndexEntry{SegmentPath: c.active.Path(), Offset: offset, Rev: 1, ExpiresAt: exp})
+		c.index.Set(ids[i], IndexEntry{SegmentPath: c.active.Path(), Offset: offset, Rev: 1, ExpiresAt: exp, Epoch: e.Epoch})
 		c.sidxIndexEntry(ids[i], records[i])
 	}
 	if err := c.syncActiveLocked(); err != nil {
@@ -711,7 +720,7 @@ func (c *Collection) update(id uint64, data map[string]any, expiresAt int64, kee
 		c.mu.Unlock()
 		return time.Time{}, fmt.Errorf("collection: update: %w", err)
 	}
-	c.index.Set(id, IndexEntry{SegmentPath: c.active.Path(), Offset: offset, Rev: newRev, ExpiresAt: exp})
+	c.index.Set(id, IndexEntry{SegmentPath: c.active.Path(), Offset: offset, Rev: newRev, ExpiresAt: exp, Epoch: e.Epoch})
 	c.sidxUpdateEntry(id, data)
 	if err := c.syncActiveLocked(); err != nil {
 		c.mu.Unlock()
@@ -809,8 +818,8 @@ func (c *Collection) Get(id uint64) (Record, error) {
 		return Record{}, err
 	}
 	data := e.Data
-	if c.enc != nil {
-		dec, derr := c.enc.materialize(context.Background(), e.Data, nil)
+	if enc := c.enc.Load(); enc != nil {
+		dec, derr := enc.materialize(context.Background(), e.Data, nil)
 		if derr != nil {
 			return Record{}, derr
 		}
@@ -1074,14 +1083,22 @@ func (c *Collection) CommitTx(ops []txOp) error {
 	// append, so a reserved-marker collision aborts the whole commit with nothing
 	// written. The plaintext op.data is still used for secondary indexes and watch
 	// events below.
+	// Snapshot the encryptor once for the whole commit: c.mu is held here and a
+	// policy change also takes c.mu, so the write policy and its epoch cannot shift
+	// between sealing an op and stamping its entry.
+	enc := c.enc.Load()
+	var txEpoch uint64
+	if enc != nil {
+		txEpoch = enc.epoch
+	}
 	sealed := make([]map[string]any, len(ops))
 	for i, op := range ops {
 		if op.kind != txOpInsert && op.kind != txOpUpdate {
 			continue
 		}
 		sealed[i] = op.data
-		if c.enc != nil {
-			sd, err := c.enc.encrypt(op.data)
+		if enc != nil {
+			sd, err := enc.encrypt(op.data)
 			if err != nil {
 				c.mu.Unlock()
 				return err
@@ -1101,6 +1118,7 @@ func (c *Collection) CommitTx(ops []txOp) error {
 			e := store.NewInsert(op.id, sealed[i])
 			e.Ts = op.ts
 			e.Rev = 1 // a fresh record starts at revision 1
+			e.Epoch = txEpoch
 			exp := c.resolveInsertExpiry(time.Time{})
 			e.ExpiresAt = exp
 			offset, err := c.active.Append(e)
@@ -1108,7 +1126,7 @@ func (c *Collection) CommitTx(ops []txOp) error {
 				c.mu.Unlock()
 				return fmt.Errorf("tx commit: insert id %d: %w", op.id, err)
 			}
-			c.index.Set(op.id, IndexEntry{SegmentPath: c.active.Path(), Offset: offset, Rev: 1, ExpiresAt: exp})
+			c.index.Set(op.id, IndexEntry{SegmentPath: c.active.Path(), Offset: offset, Rev: 1, ExpiresAt: exp, Epoch: txEpoch})
 			c.sidxIndexEntry(op.id, op.data)
 			if op.id > maxInsertID {
 				maxInsertID = op.id
@@ -1130,12 +1148,13 @@ func (c *Collection) CommitTx(ops []txOp) error {
 			}
 			e.Rev = newRev
 			e.ExpiresAt = exp
+			e.Epoch = txEpoch
 			offset, err := c.active.Append(e)
 			if err != nil {
 				c.mu.Unlock()
 				return fmt.Errorf("tx commit: update id %d: %w", op.id, err)
 			}
-			c.index.Set(op.id, IndexEntry{SegmentPath: c.active.Path(), Offset: offset, Rev: newRev, ExpiresAt: exp})
+			c.index.Set(op.id, IndexEntry{SegmentPath: c.active.Path(), Offset: offset, Rev: newRev, ExpiresAt: exp, Epoch: txEpoch})
 			c.sidxUpdateEntry(op.id, op.data)
 			committed = append(committed, e)
 			events = append(events, WatchEvent{Op: store.OpUpdate, ID: op.id, Data: op.data, Ts: op.ts})
@@ -1339,7 +1358,7 @@ func (c *Collection) EnsureUniqueIndex(field string) error {
 func (c *Collection) ensureIndex(field string, unique bool) error {
 	// An encrypted field is opaque on disk, so indexing it would either leak its
 	// plaintext into sidx_<field>.json or index ciphertext — reject it.
-	if c.enc != nil && c.enc.isEncryptedField(field) {
+	if enc := c.enc.Load(); enc != nil && enc.isEncryptedField(field) {
 		return fmt.Errorf("%w: cannot index encrypted field %q", crypto.ErrFieldEncrypted, field)
 	}
 	c.sidxMu.Lock()
@@ -1489,8 +1508,8 @@ func (c *Collection) compareAndSwap(key string, data map[string]any, ok func(cur
 	// The predicate operates on the logical (plaintext) record, so decrypt the
 	// stored form before evaluating it.
 	curData := curEntry.Data
-	if c.enc != nil {
-		dec, derr := c.enc.materialize(context.Background(), curEntry.Data, nil)
+	if enc := c.enc.Load(); enc != nil {
+		dec, derr := enc.materialize(context.Background(), curEntry.Data, nil)
 		if derr != nil {
 			c.mu.Unlock()
 			return false, derr
@@ -1526,7 +1545,7 @@ func (c *Collection) compareAndSwap(key string, data map[string]any, ok func(cur
 		c.mu.Unlock()
 		return false, fmt.Errorf("collection: cas: %w", err)
 	}
-	c.index.Set(id, IndexEntry{SegmentPath: c.active.Path(), Offset: offset, Rev: newRev, ExpiresAt: loc.ExpiresAt})
+	c.index.Set(id, IndexEntry{SegmentPath: c.active.Path(), Offset: offset, Rev: newRev, ExpiresAt: loc.ExpiresAt, Epoch: e.Epoch})
 	c.sidxUpdateEntry(id, stamped)
 	if err := c.syncActiveLocked(); err != nil {
 		c.mu.Unlock()

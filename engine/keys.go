@@ -166,7 +166,7 @@ func (c *Collection) Upsert(key string, data map[string]any) (Record, error) {
 		c.mu.Unlock()
 		return Record{}, fmt.Errorf("collection: upsert: %w", err)
 	}
-	c.index.Set(id, IndexEntry{SegmentPath: c.active.Path(), Offset: offset, Rev: rev, ExpiresAt: exp})
+	c.index.Set(id, IndexEntry{SegmentPath: c.active.Path(), Offset: offset, Rev: rev, ExpiresAt: exp, Epoch: e.Epoch})
 	if op == store.OpInsert {
 		c.sidxIndexEntry(id, stamped)
 	} else {
