@@ -45,6 +45,13 @@ tar xzf scriva-2026-07-10.tar.gz -C ./restored-data
 scriva serve --data ./restored-data --api-key dev-key
 ```
 
+:::tip[Encrypted backups for free]
+If a collection uses [encryption at rest](/scriva/guides/encryption/), its
+segment files are already ciphertext — so the backup tarball is encrypted with
+no extra step, and a leaked archive is useless without the key. Just remember to
+back up the **key separately**: a backup without it is unrecoverable.
+:::
+
 ## Compaction
 
 A background goroutine per collection merges and deduplicates sealed segments,

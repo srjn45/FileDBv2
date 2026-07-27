@@ -50,6 +50,7 @@ export default defineConfig({
           { label: 'Data model', slug: 'guides/data-model' },
           { label: 'Queries & indexes', slug: 'guides/queries' },
           { label: 'Durability & backup', slug: 'guides/durability-and-backup' },
+          { label: 'Encryption at rest', slug: 'guides/encryption' },
           { label: 'Replication & failover', slug: 'guides/replication' },
           { label: 'Embedding (Go library)', slug: 'guides/embedding' },
           { label: 'Client SDKs', slug: 'guides/clients' },
