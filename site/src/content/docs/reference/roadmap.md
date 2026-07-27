@@ -18,6 +18,9 @@ and backwards compatibility is maintained from here.
   optional group-by); live `Watch`.
 - **Records** — caller-supplied string keys, monotonic revisions,
   compare-and-swap, upsert, TTL, optimistic transactions.
+- **Encryption at rest** — transparent field- and record-level AEAD encryption
+  (XChaCha20-Poly1305) for the embedded engine, with passphrase/raw-key/custom
+  providers, wrong-key detection, key rotation, and lazy or bulk migration.
 - **APIs** — dual gRPC + REST from one binary, generated OpenAPI, and ten
   hand-written client SDKs.
 - **Distribution** — standalone server (Homebrew / apt / GHCR / release

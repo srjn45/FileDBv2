@@ -38,6 +38,68 @@ embedding-specific contract.
 
 ---
 
+## v1.3.0 — 2026-07-27
+
+Transparent **encryption at rest** for the embedded engine, plus a full
+documentation and marketing-site refresh. Additive and fully backward
+compatible — no wire, CLI, or on-disk-format break, and no migration from
+v1.2.1. A collection with no encryption policy behaves exactly as before, and
+client SDKs are unaffected (this is an embedded-Go-only feature; the proto
+surface is unchanged).
+
+### Added
+
+- **Encryption at rest (embedded).** Opt-in transparent field- and record-level
+  encryption for a collection, configured through the embedded façade
+  (`scriva.Open`). Sensitive values are sealed with **XChaCha20-Poly1305** AEAD
+  and are opaque on disk under a reserved marker, while reads transparently
+  return plaintext. Encrypt/decrypt happen at a single boundary (the collection
+  API), so segments, compaction, indexes, replication, and backups stay
+  **key-oblivious** — an encrypted backup tarball is produced for free.
+  - **Key sources** (DB-wide; one key protects the database): `scriva.WithPassphrase`
+    (Argon2id-derived — salt persisted, non-secret, in `meta.json` and re-derived
+    on reopen), `scriva.WithEncryptionKey` (a raw 32-byte key), and
+    `scriva.WithKeyProvider` (a custom `crypto.KeyProvider` — OS keychain, Vault,
+    KMS, or a `crypto.Keyring` you rotate yourself).
+  - **Policy** (per collection): `scriva.WithCollectionEncryption(name, spec)` with
+    `scriva.EncryptFields(...)` (seal a deny-list of fields; everything else stays
+    queryable) or `scriva.EncryptRecord(...)` (seal the whole record, keeping only
+    named index fields plaintext). `EncryptSpec.Policy()` also drives the runtime
+    admin API.
+  - **Wrong-key detection.** A `key_check` in `meta.json` is verified on `Open`, so
+    a wrong key/passphrase fails fast with `crypto.ErrWrongEncryptionKey` instead
+    of producing garbage on the first read.
+  - **Runtime administration** on `engine.Collection`: `SetEncryptionPolicy`
+    (enable / adjust fields / disable), `RotateKey`, `MigrateNow`, `CompactNow`,
+    and `EncryptionStatus`. Existing data migrates **lazily** as records are
+    rewritten, or in **bulk** via a **re-encrypting compaction pass** (fail-closed
+    — a retired key aborts the pass before anything is mutated). A policy **epoch**
+    tracks progress; reads are policy-independent throughout, so a half-migrated
+    collection reads correctly the whole time. Key rotation is incremental — every
+    blob names its own key, so old segments decrypt under the old key until a
+    compaction pass retires it.
+  - **Enforced tradeoff.** An encrypted field cannot be indexed, filtered, sorted,
+    or aggregated on (it is opaque on disk); attempting it returns a typed
+    `crypto.ErrFieldEncrypted` rather than silently leaking plaintext into a
+    secondary index.
+  - New self-contained **`crypto/`** package (AEAD envelope, `Keyring` /
+    `KeyProvider`, Argon2id KDF, key-check, typed errors); it adds
+    `golang.org/x/crypto` to the embeddable module. `store/` never touches key
+    material. Shipped across #98, #100, #101, #103.
+
+### Docs
+
+- **Marketing site + user guide** coverage for encryption: a new "Encryption at
+  rest" guide, a landing-page panel, and updated "What is ScrivaDB?",
+  "Durability & backup", and roadmap pages, alongside the design essay
+  *Encrypting a database you can `cat`*. The in-repo design doc is
+  [`docs/encryption-at-rest.md`](docs/encryption-at-rest.md), with usage in
+  [`docs/getting-started.md`](docs/getting-started.md#encryption-at-rest-embedded)
+  and internals in
+  [`docs/architecture.md`](docs/architecture.md#encryption-at-rest).
+
+---
+
 ## v1.2.1 — ScrivaDB — 2026-07-23
 
 > **Note on v1.2.0.** `v1.2.0` was the initial ScrivaDB tag and is installable as

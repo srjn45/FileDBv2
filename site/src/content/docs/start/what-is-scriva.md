@@ -45,6 +45,10 @@ no network, and no separate daemon.
 - **More than key-value** — caller-supplied string keys, per-record revisions
   with compare-and-swap, upsert, TTL, optimistic transactions, and live `Watch`
   subscriptions.
+- **Encryption at rest** — opt into transparent field- or record-level AEAD
+  encryption for the embedded engine. Secrets are opaque on disk while reads
+  return plaintext, and backups are encrypted for free. See
+  [Encryption at rest](/scriva/guides/encryption/).
 
 ## When to use it
 

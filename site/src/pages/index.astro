@@ -25,6 +25,7 @@ const features = [
   ['Aggregations', 'guides/queries'],
   ['Transactions & CAS', 'guides/data-model'],
   ['Durability & backup', 'guides/durability-and-backup'],
+  ['Encryption at rest', 'guides/encryption'],
   ['Replication & failover', 'guides/replication'],
   ['Embedding (Go library)', 'guides/embedding'],
   ['Client SDKs (10 langs)', 'guides/clients'],
@@ -41,7 +42,7 @@ const deploys = [
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>ScrivaDB — a file-based document database</title>
-    <meta name="description" content="A lightweight, append-only, file-based document database. Human-readable NDJSON storage, gRPC + REST from one binary, an embeddable Go engine, secondary indexes, replication, and 10 client SDKs. MIT licensed." />
+    <meta name="description" content="A lightweight, append-only, file-based document database. Human-readable NDJSON storage, gRPC + REST from one binary, an embeddable Go engine, secondary indexes, transparent encryption at rest, replication, and 10 client SDKs. MIT licensed." />
     <link rel="icon" href={`${base}favicon.svg`} />
     <meta property="og:title" content="ScrivaDB — a file-based document database" />
     <meta property="og:description" content="Append-only NDJSON storage, gRPC + REST from one binary, an embeddable Go engine. One small binary, zero dependencies." />
@@ -184,6 +185,26 @@ const deploys = [
             <p class="metric-sub" style="margin-top:14px">A follower bootstraps from a snapshot then
               tails the leader's committed writes by global <code>LSN</code> — resumable, no gaps or
               dupes. Bound staleness by diffing applied vs leader LSN.</p>
+          </div>
+
+          <!-- encryption at rest -->
+          <div class="panel span-12">
+            <div class="panel-title">
+              <h3>Encryption at rest</h3>
+              <span class="badge live">XChaCha20-Poly1305</span>
+            </div>
+            <div class="modebar">
+              <div class="mode"><span class="k">field-level</span><span class="v">seal named fields</span></div>
+              <div class="mode"><span class="k">record-level</span><span class="v">seal all but index cols</span></div>
+              <div class="mode active"><span class="k">passphrase</span><span class="v">Argon2id-derived</span></div>
+              <div class="mode"><span class="k">raw key / KMS</span><span class="v">bring your own</span></div>
+            </div>
+            <p class="metric-sub" style="margin-top:14px">Transparent AEAD encryption at a single
+              boundary — segments, compaction, indexes, replication, and backups stay
+              <em>key-oblivious</em>, so an encrypted value is opaque on disk while reads return
+              plaintext. A wrong key fails fast on open; key rotation and enable/disable migrate
+              existing data lazily or via a re-encrypting compaction pass. Configure it through the
+              embedded façade — <code>scriva.WithPassphrase</code> + <code>WithCollectionEncryption</code>.</p>
           </div>
         </div>
       </div>
