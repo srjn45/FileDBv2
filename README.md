@@ -73,6 +73,7 @@ Key properties:
 - **Append-only writes** — inserts, updates, and deletes are always new lines; no in-place modification
 - **Configurable durability** — choose `none` (OS flush), `always` (fsync per write), or `interval` (fsync on a timer) to trade throughput against crash-loss window
 - **End-to-end integrity** — every segment entry carries a CRC32C checksum, so silent on-disk bit-rot is caught on read instead of returning wrong data
+- **Encryption at rest (embedded)** — transparent field- or record-level AEAD encryption (XChaCha20-Poly1305) configured through the embedded façade: `scriva.WithPassphrase`/`WithEncryptionKey`/`WithKeyProvider` + `WithCollectionEncryption(EncryptFields/EncryptRecord)`. Values are opaque on disk under a reserved marker while reads return plaintext; a wrong key/passphrase fails fast on open; key rotation and enable/disable migrate existing data lazily or in bulk via a re-encrypting compaction pass. Segments, backups, and replication carry ciphertext for free. See [docs/encryption-at-rest.md](docs/encryption-at-rest.md)
 - **Background compaction** — a goroutine per collection merges and deduplicates sealed segments; operators can also force a synchronous pass on demand (`scriva-cli compact`)
 - **Online backup** — `scriva-cli backup` streams a consistent gzip snapshot of the live database; restore is a plain `tar xzf` into a data directory
 - **Leader→follower replication** — start a hot standby with `--replicate-from <leader>`: the follower bootstraps from a snapshot then tails the leader's committed writes (each tagged with a monotonic global LSN), applying them through the normal write path so its indexes match exactly. Async (bounded lag), resumes after a disconnect from its persisted applied-LSN with no gaps or duplicates, and exposes `ReplicationStatus` (leader LSN, per-follower lag).
@@ -139,11 +140,32 @@ rec, _   := sessions.GetByKey("sess-1")   // caller-supplied string keys
 _, _ = sessions.UpdateIfRev("sess-1", rec.Rev, map[string]any{"status": "closed"}) // CAS
 ```
 
+Opt into **transparent encryption at rest** with a key option plus a
+per-collection policy — secrets are sealed on write and returned as plaintext on
+read, with nothing else in your code changing:
+
+```go
+db, _ := scriva.Open("./data",
+    scriva.WithPassphrase(os.Getenv("SCRIVA_PASSPHRASE")),
+    scriva.WithCollectionEncryption("users", scriva.EncryptFields("password", "ssn")), // field-level
+    scriva.WithCollectionEncryption("audit", scriva.EncryptRecord("id", "tenant")),     // record-level
+)
+users := db.MustCollection("users")
+id, _, _ := users.Insert(map[string]any{"email": "a@b.com", "password": "hunter2"})
+rec, _   := users.Get(id)          // rec.Data["password"] == "hunter2"; ciphertext on disk
+```
+
+A wrong passphrase fails fast on `Open`. Key rotation and enable/disable are
+runtime operations on the returned collection (`RotateKey`, `SetEncryptionPolicy`,
+`MigrateNow`, `EncryptionStatus`). See
+**[docs/encryption-at-rest.md](docs/encryption-at-rest.md)** for the full design.
+
 The embedded surface includes caller-supplied string keys, per-record revisions
 with compare-and-swap, upsert, count/exists, secondary indexes, in-process
-`Watch` subscriptions, and a `LoadJSONL` bulk-import path. The engine pulls in
-**no** gRPC/protobuf/Prometheus/cobra/OpenTelemetry dependencies — a CI gate
-enforces that.
+`Watch` subscriptions, transparent encryption at rest, and a `LoadJSONL`
+bulk-import path. The engine pulls in **no**
+gRPC/protobuf/Prometheus/cobra/OpenTelemetry dependencies — a CI gate enforces
+that.
 
 This is a distinct distribution channel: **`go get` for embedding**, while the
 standalone server ships via Homebrew/apt/GHCR and tagged binary releases. Both

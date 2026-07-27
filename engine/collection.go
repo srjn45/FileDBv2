@@ -133,6 +133,13 @@ type CollectionConfig struct {
 	// can be re-derived on reopen. It is round-tripped opaquely by the engine; the
 	// façade populates it. nil for raw-key providers.
 	EncryptionKDF *EncryptionKDF
+	// EncryptionByCollection, when non-nil, maps a collection name to the
+	// encryption policy to enable for it. It is DB-wide (the embedded façade builds
+	// it from WithCollectionEncryption options): OpenCollection overlays the entry
+	// matching this collection's name onto Encryption when Encryption is not already
+	// set, so one base config can carry distinct policies for several collections.
+	// It mirrors Quotas. Unlisted collections stay unencrypted.
+	EncryptionByCollection map[string]*EncryptionPolicy
 }
 
 // Quota is a single collection's write-path resource budget. A zero field means
@@ -261,6 +268,15 @@ func OpenCollection(name, dataDir string, cfg CollectionConfig) (*Collection, er
 	if q, ok := cfg.Quotas[name]; ok {
 		cfg.MaxRecords = q.MaxRecords
 		cfg.MaxBytes = q.MaxBytes
+	}
+	// Overlay a per-collection encryption policy if one is configured for this
+	// name and an explicit Encryption was not already set (mirrors Quotas). The
+	// embedded façade uses this for WithCollectionEncryption; an already-encrypted
+	// collection ignores it (its policy is loaded from meta.json in initEncryption).
+	if cfg.Encryption == nil {
+		if p, ok := cfg.EncryptionByCollection[name]; ok {
+			cfg.Encryption = p
+		}
 	}
 
 	c := &Collection{

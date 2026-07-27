@@ -301,6 +301,64 @@ trade-off on your own hardware with `make bench`.
 
 ---
 
+## Encryption at rest (embedded)
+
+Encryption at rest is a feature of the **embedded engine** (root package
+`scriva`), configured when you `Open` the database in-process — the standalone
+server does not expose it. Values are sealed with an AEAD cipher
+(XChaCha20-Poly1305) so they are opaque on disk under a reserved marker, while
+reads transparently return plaintext. Choose one key source and one policy per
+collection:
+
+```go
+import (
+    "os"
+    "github.com/srjn45/scriva"
+)
+
+db, err := scriva.Open("./data",
+    // One of: a human passphrase (Argon2id-derived), a raw 32-byte key, or a
+    // custom provider (OS keychain / Vault / KMS).
+    scriva.WithPassphrase(os.Getenv("SCRIVA_PASSPHRASE")),
+
+    // Field-level: name the fields to encrypt; everything else stays queryable.
+    scriva.WithCollectionEncryption("users", scriva.EncryptFields("password", "ssn")),
+
+    // Record-level: seal the whole record, keeping only the named index fields
+    // (and the reserved _key) plaintext and queryable.
+    scriva.WithCollectionEncryption("audit", scriva.EncryptRecord("id", "tenant")),
+)
+if err != nil { /* a wrong passphrase fails fast here with ErrWrongEncryptionKey */ }
+
+users := db.MustCollection("users")
+id, _, _ := users.Insert(map[string]any{"email": "a@b.com", "password": "hunter2"})
+rec, _   := users.Get(id) // rec.Data["password"] == "hunter2"
+```
+
+Key points:
+
+- **Key sources** — `WithPassphrase` (a random salt is minted once and persisted,
+  non-secret, in `meta.json`, then re-derived on every reopen), `WithEncryptionKey`
+  (a raw 32-byte key you manage), or `WithKeyProvider` (any `crypto.KeyProvider`).
+- **Wrong-key detection** — a `key_check` in `meta.json` is verified on `Open`, so
+  a wrong key/passphrase fails immediately instead of returning garbage on read.
+- **What stays queryable** — encrypted fields cannot be indexed, filtered, sorted,
+  or aggregated (they are opaque on disk); plaintext fields and record-mode index
+  fields work normally.
+- **Runtime administration** — the returned `*engine.Collection` exposes
+  `SetEncryptionPolicy` (enable / adjust fields / disable), `RotateKey`,
+  `MigrateNow` (bulk re-encrypt to security completion), `CompactNow`, and
+  `EncryptionStatus` (migration progress). Existing data migrates lazily as
+  records are rewritten, or in bulk via a re-encrypting compaction pass.
+- **Backups are encrypted for free** — segment files and snapshots already hold
+  ciphertext, so a leaked backup is useless without the key. **Back up the key
+  separately** — a backup without it is unrecoverable.
+
+See [encryption-at-rest.md](encryption-at-rest.md) for the full design and
+[architecture.md](architecture.md#encryption-at-rest) for how it works internally.
+
+---
+
 ## Backpressure & limits
 
 By default ScrivaDB accepts unbounded concurrent work — fine for a trusted
