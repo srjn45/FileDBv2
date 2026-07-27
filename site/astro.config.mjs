@@ -1,5 +1,6 @@
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
+import starlightBlog from 'starlight-blog';
 
 // GitHub Pages project site lives at https://srjn45.github.io/scriva
 export default defineConfig({
@@ -9,6 +10,22 @@ export default defineConfig({
     starlight({
       title: 'ScrivaDB',
       description: 'A lightweight, append-only, file-based document database. Human-readable NDJSON storage, gRPC + REST from one binary, and an embeddable Go engine.',
+      plugins: [
+        starlightBlog({
+          title: 'Blog',
+          // "Blog" link sits in the header, before the theme switcher.
+          navigation: 'header-end',
+          // Global authors — reference by key in a post's `authors` frontmatter.
+          authors: {
+            srjn45: {
+              name: 'Srajan Pathak',
+              title: 'ScrivaDB author',
+              url: 'https://github.com/srjn45',
+            },
+          },
+          metrics: { readingTime: true, words: false },
+        }),
+      ],
       logo: {
         light: './src/assets/scriva-wordmark-light.svg',
         dark: './src/assets/scriva-wordmark-dark.svg',
