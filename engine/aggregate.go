@@ -70,6 +70,17 @@ func (c *Collection) Aggregate(ctx context.Context, spec AggregateSpec, emit fun
 		f = query.MatchAll
 	}
 
+	// An encrypted field is opaque, so it cannot be grouped by or numerically
+	// aggregated. The filter is validated inside forEachMatch/Count below.
+	if c.enc != nil {
+		if err := c.enc.checkField(spec.GroupBy); err != nil {
+			return err
+		}
+		if err := c.enc.checkField(spec.Field); err != nil {
+			return err
+		}
+	}
+
 	// Fast path: a whole-set count with no numeric field reuses Count, which answers
 	// from the primary/secondary index without reading segments where it can.
 	if spec.GroupBy == "" && spec.Field == "" {
